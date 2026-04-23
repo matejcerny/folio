@@ -47,6 +47,7 @@ metals.sbt
 # SBT
 .bsp/
 target/
+*.semanticdb
 # Node
 node_modules/
 lib_managed/
@@ -66,3 +67,5 @@ Session.vim
 Thumbs.db
 Desktop.ini
 app.version
+# Zed
+.zed
