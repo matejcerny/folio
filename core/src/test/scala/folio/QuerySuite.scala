@@ -15,7 +15,3 @@ object QuerySuite extends SimpleIOSuite:
 
   pureTest("Query.empty has no sortBys"):
     expect(clue(TestFixtures.emptyQueryWithId.sortBys).isEmpty)
-
-  pureTest("cursorPosition extension delegates to CursorPosition.fromQuery"):
-    val query = TestFixtures.queryWithIdSort
-    expect.same(query.cursorPosition, CursorPosition.Id(None))

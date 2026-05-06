@@ -52,12 +52,6 @@ object TestFixtures:
   val queryWithIdSort: Query[TestField] =
     Query.empty[TestField].copy(sortBys = ListSet(TestField.Id.ascending))
 
-  val queryWithNonIdSort: Query[TestField] =
-    Query.empty[TestField].copy(sortBys = ListSet(TestField.CreatedAt.descending))
-
-  val queryWithFilter: Query[TestField] =
-    Query.empty[TestField].copy(filters = Set(FilterBy.ExactMatch(TestField.Name, "alice")))
-
   val fullyPopulatedQuery: Query[TestField] =
     Query(
       filters = Set(FilterBy.ExactMatch(TestField.Name, "alice")),

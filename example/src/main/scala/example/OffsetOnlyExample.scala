@@ -19,18 +19,27 @@ given FieldSchema[EventField] with
     case "event_source" => Right(EventField.Source)
     case other          => Left(s"Unknown field: $other")
 
+case class Event(timestamp: String, source: String)
+
 @main def runOffsetOnlyExample(): Unit =
+  val limit = Limit(1)
   val query = Query(
     filters = Set.empty,
     cursor = None,
-    limit = Some(Limit(10)),
+    limit = Some(limit),
     sortBys = ListSet(EventField.Timestamp.ascending)
   )
 
-  val position = query.cursorPosition
-  val encoded = Cursor.encode(position, query)
-  val roundtrip = Cursor.decode(encoded, query)
+  val initial = query.toCursor()
+  println(s"Initial:   ${initial.value}")
 
-  println(s"Position:  $position")
-  println(s"Encoded:   ${encoded.value}")
-  println(s"Roundtrip: $roundtrip")
+  // Build a Page of results using the offset helper.
+  val rows = Seq(Event("2024-01-01", "api"), Event("2024-01-02", "api"))
+  Page
+    .withPagination[cats.Id, Event, EventField](query, _ => rows)
+    .fold(
+      error => println(s"Error:     $error"),
+      page =>
+        println(s"Next:      ${page.nextCursor.map(_.value)}")
+        println(s"Previous:  ${page.previousCursor.map(_.value)}")
+    )

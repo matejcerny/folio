@@ -9,20 +9,26 @@ opaque type Cursor = String
 object Cursor:
   def apply(value: String): Cursor = value
 
-  private val numberOfParts = 3
+  private val numberOfParts = 4
   private val partSeparator = ";"
   private val fieldSeparator = ":"
   private val listSeparator = ","
 
-  private val idCursorType = "d"
-  private val incrementalCursorType = "i"
+  private val keysetCursorType = "k"
+  private val offsetCursorType = "o"
 
-  def encode[FIELD: FieldSchema](position: CursorPosition, query: Query[FIELD])(using codec: CursorCodec): Cursor =
-    codec.encode(s"${positionType(position)}$partSeparator${positionOffset(position)}$partSeparator${hash(query)}")
+  private val forwardDirection = "F"
+  private val backwardDirection = "B"
+
+  def encode[FIELD: FieldSchema](decoded: DecodedCursor, query: Query[FIELD])(using codec: CursorCodec): Cursor =
+    val direction = directionPart(decoded.direction)
+    val cursorType = positionType(decoded.position)
+    val offset = positionOffset(decoded.position)
+    codec.encode(s"$direction$partSeparator$cursorType$partSeparator$offset$partSeparator${hash(query)}")
 
   def decode[FIELD: FieldSchema](cursor: Cursor, query: Query[FIELD])(using
       codec: CursorCodec
-  ): Either[CursorDecodingError, CursorPosition] =
+  ): Either[CursorDecodingError, DecodedCursor] =
     for
       raw <- codec.decode(cursor)
       split = raw.split(partSeparator, -1)
@@ -31,22 +37,34 @@ object Cursor:
         split,
         CursorDecodingError.InvalidFormat(numberOfParts, split.length)
       )
-      Array(cursorType, offsetString, fingerprint) = parts
+      Array(directionString, cursorType, offsetString, fingerprint) = parts
       _ <- Either.cond(fingerprint == hash(query), (), CursorDecodingError.StaleCursor)
+      direction <- parseDirection(directionString)
       cursorPosition <- parsePosition(cursorType, offsetString)
-    yield cursorPosition
+    yield DecodedCursor(direction, cursorPosition)
 
   extension (cursor: Cursor) def value: String = cursor
 
-  private def positionType(position: CursorPosition): String =
-    position match
-      case _: CursorPosition.Id          => idCursorType
-      case _: CursorPosition.Incremental => incrementalCursorType
+  private def directionPart(direction: Direction): String =
+    direction match
+      case Direction.Forward  => forwardDirection
+      case Direction.Backward => backwardDirection
 
-  private def positionOffset(position: CursorPosition): String =
+  private def parseDirection(directionString: String): Either[CursorDecodingError, Direction] =
+    directionString match
+      case `forwardDirection`  => Right(Direction.Forward)
+      case `backwardDirection` => Right(Direction.Backward)
+      case other               => Left(CursorDecodingError.UnknownDirection(other))
+
+  private def positionType(position: Position): String =
     position match
-      case CursorPosition.Id(lastId)          => lastId.map(_.value.toString).getOrElse("")
-      case CursorPosition.Incremental(offset) => offset.value.toString
+      case _: Position.Keyset => keysetCursorType
+      case _: Position.Offset => offsetCursorType
+
+  private def positionOffset(position: Position): String =
+    position match
+      case Position.Keyset(lastId) => lastId.map(_.toString).getOrElse("")
+      case Position.Offset(offset) => offset.toString
 
   private def limitPart(limit: Option[Limit]): String =
     limit.map(_.value.toString).getOrElse("")
@@ -70,16 +88,15 @@ object Cursor:
   private def parsePosition(
       cursorType: String,
       offsetString: String
-  ): Either[CursorDecodingError, CursorPosition] =
+  ): Either[CursorDecodingError, Position] =
     val offsetLong: String => Either[CursorDecodingError, Long] =
       _.toLongOption.toRight(CursorDecodingError.MalformedOffset(offsetString))
 
     cursorType match
-      case `idCursorType` if offsetString.isEmpty => Right(CursorPosition.Id(None))
-      case `idCursorType`          => offsetLong(offsetString).map(id => CursorPosition.Id(Some(Offset.LastId(id))))
-      case `incrementalCursorType` =>
-        offsetLong(offsetString).map(offset => CursorPosition.Incremental(Offset.Incremental(offset)))
-      case _ => Left(CursorDecodingError.UnknownCursorType(cursorType))
+      case `keysetCursorType` if offsetString.isEmpty => Right(Position.Keyset(None))
+      case `keysetCursorType`                         => offsetLong(offsetString).map(id => Position.Keyset(Some(id)))
+      case `offsetCursorType`                         => offsetLong(offsetString).map(offset => Position.Offset(offset))
+      case _                                          => Left(CursorDecodingError.UnknownCursorType(cursorType))
 
   private def hash[FIELD: FieldSchema](query: Query[FIELD]): String =
     val limit = limitPart(query.limit)
@@ -87,3 +104,7 @@ object Cursor:
     val filter = filterPart(query.filters)
 
     MurmurHash3.stringHash(s"$limit$partSeparator$sort$partSeparator$filter").toString
+
+extension (cursor: Cursor)
+  def decode[FIELD: FieldSchema](query: Query[FIELD])(using CursorCodec): Either[CursorDecodingError, DecodedCursor] =
+    Cursor.decode(cursor, query)
