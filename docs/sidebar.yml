@@ -1,0 +1,8 @@
+index: index.md
+subsection:
+  - page: index.md
+    title: Overview
+  - page: quick-example.md
+    title: Quick Example
+  - page: installation.md
+    title: Installation
