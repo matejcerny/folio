@@ -4,12 +4,12 @@ import folio.*
 
 import scala.collection.immutable.ListSet
 
+case class Message(id: Long, enqueuedAt: String, lastReadAt: String)
+
 // Step 1: Define the fields your entity can be sorted/filtered by.
 // Step 2: Derive FieldSchema — maps enum cases to column name strings used in cursors.
 enum MessageField derives FieldSchema.SnakeCase:
   case Id, EnqueuedAt, LastReadAt
-
-case class Message(id: Long, enqueuedAt: String, lastReadAt: String)
 
 // Step 3: Designate the id field and how to extract it from a row — opts in to keyset pagination.
 given KeysetField[MessageField, Message] = KeysetField(MessageField.Id, _.id)

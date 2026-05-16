@@ -11,7 +11,10 @@ object Position:
     val First = Keyset(lastId = None)
 
   /** Offset-based pagination: tracks an absolute row offset. */
-  case class Offset(offset: Long) extends Position
+  case class Offset(offset: Long) extends Position:
+    def previous(limit: Limit): Offset = Offset(math.max(Offset.First.offset, offset - limit.value))
+    def next(limit: Limit): Offset = Offset(offset + limit.value)
+
   object Offset:
     val First = Offset(0L)
 

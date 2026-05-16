@@ -60,7 +60,7 @@ object CursorSuite extends SimpleIOSuite:
   pureTest("different positions produce different cursors"):
     val cursorId = Cursor.encode(DecodedCursor(Direction.Forward, Position.Keyset(None)), baseQuery)
     val cursorIncremental = Cursor.encode(
-      DecodedCursor(Direction.Forward, Position.Offset(0L)),
+      DecodedCursor(Direction.Forward, Position.Offset.First),
       baseQuery
     )
 

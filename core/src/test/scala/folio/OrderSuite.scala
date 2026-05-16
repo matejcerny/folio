@@ -9,3 +9,7 @@ object OrderSuite extends SimpleIOSuite:
 
   pureTest("Ascending and Descending are distinct"):
     expect(clue(Order.Ascending) != clue(Order.Descending))
+
+  pureTest("Order.flip flips the order"):
+    expect.same(Order.Ascending.flip, Order.Descending)
+    expect.same(Order.Descending.flip, Order.Ascending)

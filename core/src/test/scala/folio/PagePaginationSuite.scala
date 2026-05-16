@@ -175,7 +175,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     val previous = page.previousCursor.map(decodedOf(_, query))
     List(
       expect.same(page.nextCursor, None),
-      expect.same(previous, Some(DecodedCursor(Direction.Backward, Position.Offset(0L))))
+      expect.same(previous, Some(DecodedCursor(Direction.Backward, Position.Offset.First)))
     ).combineAll
 
   pureTest("offset: backward with hasMore=true emits both"):
@@ -416,7 +416,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     val page2 = pageWith(eventTable.fetch, eventQuery.copy(cursor = Some(cursor2)))
     // api timestamps desc: 01-07, 01-05, 01-03, 01-01.
     List(
-      expect.same(captured.map(_.position), List(Position.Offset(0L))),
+      expect.same(captured.map(_.position), List(Position.Offset.First)),
       expect.same(page1.data.map(_.timestamp), Seq("2024-01-07T00:00:00", "2024-01-05T00:00:00")),
       expect.same(page2.data.map(_.timestamp), Seq("2024-01-03T00:00:00", "2024-01-01T00:00:00")),
       expect.same(page2.nextCursor, None)

@@ -11,6 +11,7 @@ lazy val root = project
     name := "folio",
     publish / skip := true
   )
+  .aggregate(core)
 
 lazy val core = project
   .in(file("core"))
@@ -27,5 +28,6 @@ lazy val example = project
   .dependsOn(core)
   .settings(
     name := "folio-example",
-    publish / skip := true
+    publish / skip := true,
+    coverageEnabled := false
   )
