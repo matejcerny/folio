@@ -5,14 +5,9 @@ import folio.*
 import scala.collection.immutable.ListSet
 
 // Step 1: Define the fields your entity can be sorted/filtered by.
-enum MessageField:
+// Step 2: Derive FieldSchema — maps enum cases to column name strings used in cursors.
+enum MessageField derives FieldSchema.SnakeCase:
   case Id, EnqueuedAt, LastReadAt
-
-// Step 2: Provide FieldSchema — maps enum cases to column name strings used in cursors.
-given FieldSchema[MessageField] = FieldSchema.fromMapping:
-  case MessageField.Id         => "msg_id"
-  case MessageField.EnqueuedAt => "enqueued_at"
-  case MessageField.LastReadAt => "last_read_at"
 
 case class Message(id: Long, enqueuedAt: String, lastReadAt: String)
 

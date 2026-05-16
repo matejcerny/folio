@@ -1,23 +1,14 @@
 package folio
 
-import scala.collection.immutable.ListSet
-
 import folio.FolioError.*
 
-enum TestField:
+import scala.collection.immutable.ListSet
+
+enum TestField derives FieldSchema.SnakeCase:
   case Id, Name, CreatedAt
 
-given FieldSchema[TestField] = FieldSchema.fromMapping:
-  case TestField.Id        => "id"
-  case TestField.Name      => "name"
-  case TestField.CreatedAt => "created_at"
-
-enum TestFieldNoId:
+enum TestFieldNoId derives FieldSchema.SnakeCase:
   case Timestamp, Source
-
-given FieldSchema[TestFieldNoId] = FieldSchema.fromMapping:
-  case TestFieldNoId.Timestamp => "timestamp"
-  case TestFieldNoId.Source    => "source"
 
 given CursorCodec with
   def encode(raw: String): String = raw
