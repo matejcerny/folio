@@ -9,26 +9,15 @@ enum MessageField:
   case Id, EnqueuedAt, LastReadAt
 
 // Step 2: Provide FieldSchema — maps enum cases to column name strings used in cursors.
-given FieldSchema[MessageField] with
-  def name(field: MessageField): String = field match
-    case MessageField.Id         => "msg_id"
-    case MessageField.EnqueuedAt => "enqueued_at"
-    case MessageField.LastReadAt => "last_read_at"
+given FieldSchema[MessageField] = FieldSchema.fromMapping:
+  case MessageField.Id         => "msg_id"
+  case MessageField.EnqueuedAt => "enqueued_at"
+  case MessageField.LastReadAt => "last_read_at"
 
-  def fromName(name: String): Either[String, MessageField] = name match
-    case "msg_id"       => Right(MessageField.Id)
-    case "enqueued_at"  => Right(MessageField.EnqueuedAt)
-    case "last_read_at" => Right(MessageField.LastReadAt)
-    case other          => Left(s"Unknown field: $other")
+case class Message(id: Long, enqueuedAt: String, lastReadAt: String)
 
-// Step 3: Identify which field is the id (used for keyset pagination).
-given IdField[MessageField] with
-  def idField: MessageField = MessageField.Id
-
-case class Message(id: Long, body: String)
-
-// Step 4: Provide RowId so keyset pagination can read the id off each row.
-given RowId[Message] = RowId(_.id)
+// Step 3: Designate the id field and how to extract it from a row — opts in to keyset pagination.
+given KeysetField[MessageField, Message] = KeysetField(MessageField.Id, _.id)
 
 @main def runKeysetExample(): Unit =
   val limit = Limit(2)
@@ -43,8 +32,12 @@ given RowId[Message] = RowId(_.id)
   println(s"Initial:   ${initial.value}")
 
   // Build a Page of results using the unified pagination helper.
-  // With IdField + RowId in scope and primary sort = id, this picks keyset.
-  val rows = Seq(Message(1, "hi"), Message(2, "hello"), Message(3, "hey"))
+  // With KeysetField in scope and primary sort = id, this picks keyset.
+  val rows = Seq(
+    Message(1, "2024-01-01", "2024-01-02"),
+    Message(2, "2024-01-03", "2024-01-04"),
+    Message(3, "2024-01-05", "2024-01-06")
+  )
   Page
     .withPagination[cats.Id, Message, MessageField](query, _ => rows)
     .fold(

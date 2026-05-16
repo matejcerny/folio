@@ -9,15 +9,9 @@ enum EventField:
   case Timestamp, Source
 
 // Step 2: Provide FieldSchema — maps enum cases to column name strings used in cursors.
-given FieldSchema[EventField] with
-  def name(field: EventField): String = field match
-    case EventField.Timestamp => "event_ts"
-    case EventField.Source    => "event_source"
-
-  def fromName(name: String): Either[String, EventField] = name match
-    case "event_ts"     => Right(EventField.Timestamp)
-    case "event_source" => Right(EventField.Source)
-    case other          => Left(s"Unknown field: $other")
+given FieldSchema[EventField] = FieldSchema.fromMapping:
+  case EventField.Timestamp => "event_ts"
+  case EventField.Source    => "event_source"
 
 case class Event(timestamp: String, source: String)
 

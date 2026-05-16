@@ -4,6 +4,8 @@ import weaver.SimpleIOSuite
 
 object DecodedCursorSuite extends SimpleIOSuite:
 
+  private given KeysetField[TestField, Any] = KeysetField(TestField.Id, _ => 0L)
+
   pureTest("query.toCursor defaults to Forward direction"):
     val query = TestFixtures.emptyQueryWithId
     val cursor = query.toCursor()

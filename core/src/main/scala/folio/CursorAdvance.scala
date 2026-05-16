@@ -22,15 +22,15 @@ private[folio] object CursorAdvance:
         case offset: Position.Offset => offsetPrevious(offset, limit)
         case keyset: Position.Keyset => keyset
 
-  def keysetAware[T](rowId: RowId[T]): CursorAdvance[T] = new CursorAdvance[T]:
+  def keysetAware[T](keysetField: KeysetField[?, T]): CursorAdvance[T] = new CursorAdvance[T]:
     def next(position: Position, rows: Seq[T], limit: Limit): Position =
       position match
         case offset: Position.Offset => offsetNext(offset, limit)
         case _: Position.Keyset      =>
-          rows.lastOption.fold(position)(last => Position.Keyset(Some(rowId(last))))
+          rows.lastOption.fold(position)(last => Position.Keyset(Some(keysetField.rowId(last))))
 
     def previous(position: Position, rows: Seq[T], limit: Limit): Position =
       position match
         case offset: Position.Offset => offsetPrevious(offset, limit)
         case _: Position.Keyset      =>
-          rows.headOption.fold(position)(first => Position.Keyset(Some(rowId(first))))
+          rows.headOption.fold(position)(first => Position.Keyset(Some(keysetField.rowId(first))))

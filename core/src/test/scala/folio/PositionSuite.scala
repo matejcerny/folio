@@ -6,6 +6,8 @@ import weaver.SimpleIOSuite
 
 object PositionSuite extends SimpleIOSuite:
 
+  private given KeysetField[TestField, Any] = KeysetField(TestField.Id, _ => 0L)
+
   pureTest("IdField present + primary sort is id field returns Id(None)"):
     val query = Query.empty[TestField].copy(sortBys = ListSet(TestField.Id.ascending))
     val position = Position.fromQuery(query)

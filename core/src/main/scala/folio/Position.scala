@@ -16,21 +16,22 @@ object Position:
     val First = Offset(0L)
 
   /** Picks the pagination strategy from a [[Query]]:
-    *   - When [[IdField]] is available:
+    *   - When [[KeysetField]] is available:
     *     - Primary sort field == id field -> [[Keyset]] (keyset, O(1) seek)
     *     - Other primary sort field -> [[Offset]] (offset)
-    *     - No sort specified -> [[Keyset]] with default ascending id sort
-    *   - When [[IdField]] is not available:
+    *     - No sort specified -> [[Keyset]] with default ascending id sort (materialized into [[ResolvedQuery.sortBys]]
+    *       by [[Page.withPagination]])
+    *   - When [[KeysetField]] is not available:
     *     - Always [[Offset]] (offset)
     */
   inline def fromQuery[FIELD: FieldSchema](query: Query[FIELD]): Position =
     summonFrom:
-      case idField: IdField[FIELD] => fromQueryKeyset(query, idField)
-      case _                       => Offset.First
+      case keysetField: KeysetField[FIELD, ?] => fromQueryKeyset(query, keysetField.field)
+      case _                                  => Offset.First
 
-  private def fromQueryKeyset[FIELD](query: Query[FIELD], idField: IdField[FIELD]): Position =
+  private def fromQueryKeyset[FIELD](query: Query[FIELD], idField: FIELD): Position =
     query.sortBys.headOption
       .map:
-        case primary if primary.field == idField.idField => Keyset.First
-        case _                                           => Offset.First
+        case primary if primary.field == idField => Keyset.First
+        case _                                   => Offset.First
       .getOrElse(Keyset.First)

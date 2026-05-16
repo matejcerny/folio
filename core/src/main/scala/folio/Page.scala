@@ -1,10 +1,12 @@
 package folio
 
+import scala.collection.immutable.ListSet
+
 import cats.Applicative
 import cats.syntax.functor.*
 import cats.syntax.traverse.*
 import folio.FolioError.*
-import scala.compiletime.{ summonFrom, summonInline }
+import scala.compiletime.summonFrom
 
 case class Page[T](
     limit: Limit,
@@ -22,25 +24,33 @@ object Page:
     * `fetchRows` should fetch `query.limit + 1` rows for hasMore detection (callers can use [[Limit.fetchLimit]] from
     * the supplied [[ResolvedQuery]]). The extra row is dropped before the page is returned.
     *
-    * Keyset is selected when both `IdField[FIELD]` and `RowId[T]` are in scope; otherwise offset-only is used.
+    * Keyset is selected when `KeysetField[FIELD, T]` is in scope; otherwise offset-only is used.
+    *
+    * When `KeysetField[FIELD, T]` is in scope and `query.sortBys` is empty, the default ascending id sort is
+    * materialized into [[ResolvedQuery.sortBys]] so callers always receive a deterministic ordering for keyset queries.
     */
   inline def withPagination[F[_]: Applicative, T, FIELD: FieldSchema](
       query: Query[FIELD],
       fetchRows: ResolvedQuery[FIELD] => F[Seq[T]]
   )(using CursorCodec): F[Either[CursorDecodingError, Page[T]]] =
-    val advance: CursorAdvance[T] = summonFrom:
-      case _: IdField[FIELD] => CursorAdvance.keysetAware(summonInline[RowId[T]])
-      case _                 => CursorAdvance.offsetOnly[T]
+    val (advance, defaultSortBys): (CursorAdvance[T], ListSet[SortBy[FIELD]]) = summonFrom:
+      case keysetField: KeysetField[FIELD, T] =>
+        (CursorAdvance.keysetAware[T](keysetField), ListSet(keysetField.field.ascending))
+      case _ =>
+        (CursorAdvance.offsetOnly[T], ListSet.empty[SortBy[FIELD]])
+
     // Resolve the fallback "first position" here so summonFrom inside Position.fromQuery
-    // sees the concrete FIELD's IdField at the inline call site.
+    // sees the concrete FIELD's KeysetField at the inline call site.
     val firstPosition = Position.fromQuery(query)
-    paginate(query, fetchRows, advance, firstPosition)
+
+    paginate(query, fetchRows, advance, firstPosition, defaultSortBys)
 
   private def paginate[F[_]: Applicative, T, FIELD: FieldSchema](
       query: Query[FIELD],
       fetchRows: ResolvedQuery[FIELD] => F[Seq[T]],
       advance: CursorAdvance[T],
-      firstPosition: Position
+      firstPosition: Position,
+      defaultSortBys: ListSet[SortBy[FIELD]]
   )(using CursorCodec): F[Either[CursorDecodingError, Page[T]]] =
     val currentDecodedCursor = query.cursor match
       case Some(cursor) => Cursor.decode(cursor, query)
@@ -48,22 +58,25 @@ object Page:
 
     currentDecodedCursor.traverse: current =>
       val limit = query.limit.getOrElse(Limit.Default)
+      val isBackward = current.direction == Direction.Backward
+      val baseSortBys = if query.sortBys.nonEmpty then query.sortBys else defaultSortBys
 
-      val (isBackward, sortBys, position) = current match
-        case DecodedCursor(Direction.Backward, position) => (true, query.sortBys.flipOrder, position)
-        case DecodedCursor(Direction.Forward, position)  => (false, query.sortBys, position)
+      val (sortBys, fetchPosition, reverseDisplay) = current match
+        case DecodedCursor(Direction.Backward, keyset: Position.Keyset) => (baseSortBys.flipOrder, keyset, true)
+        case DecodedCursor(Direction.Backward, offset: Position.Offset) => (baseSortBys, offset, false)
+        case DecodedCursor(Direction.Forward, position)                 => (baseSortBys, position, false)
 
-      fetchRows(ResolvedQuery(query.filters, limit.fetchLimit, sortBys, position))
+      fetchRows(ResolvedQuery(query.filters, limit.fetchLimit, sortBys, fetchPosition))
         .map: rowsPlusOne =>
           val hasMore = limit.hasMore(rowsPlusOne)
           val rows = rowsPlusOne.take(limit.value)
-          val ordered = if isBackward then rows.reverse else rows
+          val ordered = if reverseDisplay then rows.reverse else rows
 
           if ordered.isEmpty then Page.empty(limit)
           else
             val nextCursor = Option.when(isBackward || hasMore):
-              DecodedCursor(Direction.Forward, advance.next(position, ordered, limit)).encode(query)
+              DecodedCursor(Direction.Forward, advance.next(fetchPosition, ordered, limit)).encode(query)
             val previousCursor = Option.when((isBackward && hasMore) || (!isBackward && !current.isFirst)):
-              DecodedCursor(Direction.Backward, advance.previous(position, ordered, limit)).encode(query)
+              DecodedCursor(Direction.Backward, advance.previous(fetchPosition, ordered, limit)).encode(query)
 
             Page(limit, previousCursor, nextCursor, ordered)
