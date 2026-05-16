@@ -12,5 +12,6 @@ object FolioError:
         extends CursorDecodingError(s"Invalid cursor format: expected $expectedParts parts, got $actualParts")
     case object StaleCursor extends CursorDecodingError("Cursor is stale: query parameters changed")
     case class UnknownCursorType(cursorType: String) extends CursorDecodingError(s"Unknown cursor type: $cursorType")
+    case class UnknownDirection(direction: String) extends CursorDecodingError(s"Unknown direction: '$direction'")
     case class MalformedOffset(offset: String)
         extends CursorDecodingError(s"Invalid cursor: malformed offset '$offset'")

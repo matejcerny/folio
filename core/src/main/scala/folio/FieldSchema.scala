@@ -9,8 +9,8 @@ trait FieldSchema[FIELD]:
 
 extension [FIELD](field: FIELD)(using fieldSchema: FieldSchema[FIELD]) def name: String = fieldSchema.name(field)
 
-/** Identifies the "id" field within FIELD. Used by [[CursorPosition.fromQuery]] to choose between [[CursorPosition.Id]]
-  * (keyset) and [[CursorPosition.Incremental]] (offset) strategies.
+/** Identifies the "id" field within FIELD. Used by [[Position.fromQuery]] to choose between [[Position.Keyset]]
+  * (keyset) and [[Position.Offset]] (offset) strategies.
   */
 trait IdField[FIELD]:
   def idField: FIELD

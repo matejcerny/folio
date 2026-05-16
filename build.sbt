@@ -16,7 +16,10 @@ lazy val core = project
   .in(file("core"))
   .settings(
     name := "folio-core",
-    libraryDependencies += "org.typelevel" %% "weaver-cats" % "0.12.0" % Test
+    libraryDependencies ++= Seq(
+      "org.typelevel" %% "cats-core" % "2.13.0",
+      "org.typelevel" %% "weaver-cats" % "0.12.0" % Test
+    )
   )
 
 lazy val example = project

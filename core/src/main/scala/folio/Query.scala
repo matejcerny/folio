@@ -11,6 +11,3 @@ case class Query[FIELD](
 
 object Query:
   def empty[FIELD]: Query[FIELD] = Query(Set.empty, None, None, ListSet.empty)
-
-extension [FIELD: FieldSchema](query: Query[FIELD])
-  inline def cursorPosition: CursorPosition = CursorPosition.fromQuery(query)

@@ -25,23 +25,31 @@ given FieldSchema[MessageField] with
 given IdField[MessageField] with
   def idField: MessageField = MessageField.Id
 
+case class Message(id: Long, body: String)
+
+// Step 4: Provide RowId so keyset pagination can read the id off each row.
+given RowId[Message] = RowId(_.id)
+
 @main def runKeysetExample(): Unit =
+  val limit = Limit(2)
   val query = Query(
     filters = Set(FilterBy.ExactMatch(MessageField.LastReadAt, "2024-01-01")),
     cursor = None,
-    limit = Some(Limit(20)),
+    limit = Some(limit),
     sortBys = ListSet(MessageField.Id.ascending)
   )
 
-  val position = query.cursorPosition
-  val encoded = Cursor.encode(position, query)
-  val roundtrip = Cursor.decode(encoded, query)
+  val initial = query.toCursor()
+  println(s"Initial:   ${initial.value}")
 
-  println(s"Position:  $position")
-  println(s"Encoded:   ${encoded.value}")
-  println(s"Roundtrip: $roundtrip")
-
-  // Demonstrate stale cursor detection
-  val differentQuery = query.copy(limit = Some(Limit(50)))
-  val staleResult = Cursor.decode[MessageField](encoded, differentQuery)
-  println(s"Stale:     $staleResult")
+  // Build a Page of results using the unified pagination helper.
+  // With IdField + RowId in scope and primary sort = id, this picks keyset.
+  val rows = Seq(Message(1, "hi"), Message(2, "hello"), Message(3, "hey"))
+  Page
+    .withPagination[cats.Id, Message, MessageField](query, _ => rows)
+    .fold(
+      error => println(s"Error:     $error"),
+      page =>
+        println(s"Next:      ${page.nextCursor.map(_.value)}")
+        println(s"Previous:  ${page.previousCursor.map(_.value)}")
+    )
