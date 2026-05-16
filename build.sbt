@@ -15,7 +15,8 @@ lazy val root = project
 lazy val core = project
   .in(file("core"))
   .settings(
-    name := "folio-core"
+    name := "folio-core",
+    libraryDependencies += "org.typelevel" %% "weaver-cats" % "0.12.0" % Test
   )
 
 lazy val example = project
