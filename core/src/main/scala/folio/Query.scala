@@ -4,10 +4,10 @@ import scala.collection.immutable.ListSet
 
 case class Query[FIELD](
     filters: Set[FilterBy[FIELD]],
-    cursor: Option[Cursor],
+    sortBys: ListSet[SortBy[FIELD]],
     limit: Option[Limit],
-    sortBys: ListSet[SortBy[FIELD]]
+    cursor: Option[Cursor] = None
 )
 
 object Query:
-  def empty[FIELD]: Query[FIELD] = Query(Set.empty, None, None, ListSet.empty)
+  def empty[FIELD]: Query[FIELD] = Query(Set.empty, ListSet.empty, None, None)

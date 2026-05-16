@@ -364,9 +364,9 @@ object PagePaginationSuite extends SimpleIOSuite:
   pureTest("realistic offset: filter Name=alice with sort CreatedAt asc round-trips through alice rows"):
     val aliceQuery: Query[TestField] = Query(
       filters = Set(FilterBy.ExactMatch(TestField.Name, "alice")),
-      cursor = None,
+      sortBys = ListSet(TestField.CreatedAt.ascending),
       limit = Some(limit),
-      sortBys = ListSet(TestField.CreatedAt.ascending)
+      cursor = None
     )
     val page1 = pageWith(rowTable.fetch, aliceQuery)
     val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
@@ -407,9 +407,9 @@ object PagePaginationSuite extends SimpleIOSuite:
   pureTest("realistic offset-only: filter Source=api with sort Timestamp desc paginates without KeysetField"):
     val eventQuery: Query[TestFieldNoId] = Query(
       filters = Set(FilterBy.ExactMatch(TestFieldNoId.Source, "api")),
-      cursor = None,
+      sortBys = ListSet(TestFieldNoId.Timestamp.descending),
       limit = Some(limit),
-      sortBys = ListSet(TestFieldNoId.Timestamp.descending)
+      cursor = None
     )
     val (captured, page1) = pageCapturing(eventTable.fetch, eventQuery)
     val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
@@ -425,9 +425,9 @@ object PagePaginationSuite extends SimpleIOSuite:
   pureTest("realistic keyset: filter Name=alice with default Id asc anchors cursor within filtered set"):
     val keysetFilteredQuery: Query[TestField] = Query(
       filters = Set(FilterBy.ExactMatch(TestField.Name, "alice")),
-      cursor = None,
+      sortBys = ListSet.empty,
       limit = Some(limit),
-      sortBys = ListSet.empty
+      cursor = None
     )
     val (captured1, page1) = pageCapturing(rowTable.fetch, keysetFilteredQuery)
     val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))

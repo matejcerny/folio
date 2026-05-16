@@ -66,7 +66,7 @@ object Page:
         case DecodedCursor(Direction.Backward, offset: Position.Offset) => (baseSortBys, offset, false)
         case DecodedCursor(Direction.Forward, position)                 => (baseSortBys, position, false)
 
-      fetchRows(ResolvedQuery(query.filters, limit.fetchLimit, sortBys, fetchPosition))
+      fetchRows(ResolvedQuery(query.filters, sortBys, limit.fetchLimit, fetchPosition))
         .map: rowsPlusOne =>
           val hasMore = limit.hasMore(rowsPlusOne)
           val rows = rowsPlusOne.take(limit.value)
