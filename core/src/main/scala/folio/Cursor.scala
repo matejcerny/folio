@@ -1,6 +1,7 @@
 package folio
 
 import folio.FolioError.*
+
 import scala.collection.immutable.ListSet
 import scala.util.hashing.MurmurHash3
 
@@ -66,25 +67,6 @@ object Cursor:
       case Position.Keyset(lastId) => lastId.map(_.toString).getOrElse("")
       case Position.Offset(offset) => offset.toString
 
-  private def limitPart(limit: Option[Limit]): String =
-    limit.map(_.value.toString).getOrElse("")
-
-  private def sortPart[FIELD: FieldSchema](sortBys: ListSet[SortBy[FIELD]]): String =
-    sortBys.map(sortBy => s"${sortBy.field.name}$fieldSeparator${orderPart(sortBy.order)}").mkString(listSeparator)
-
-  private def orderPart(order: Order): String =
-    order match
-      case Order.Ascending  => "A"
-      case Order.Descending => "D"
-
-  private def filterPart[FIELD: FieldSchema](filters: Set[FilterBy[FIELD]]): String =
-    filters.toSeq.map(singleFilterPart).sorted.mkString(listSeparator)
-
-  private def singleFilterPart[FIELD: FieldSchema](filter: FilterBy[FIELD]): String =
-    val filterType = filter match
-      case _: FilterBy.ExactMatch[?] => "exact"
-    s"${filter.field.name}$fieldSeparator$filterType$fieldSeparator${filter.value}"
-
   private def parsePosition(
       cursorType: String,
       offsetString: String
@@ -98,10 +80,23 @@ object Cursor:
       case `offsetCursorType`                         => offsetLong(offsetString).map(offset => Position.Offset(offset))
       case _                                          => Left(CursorDecodingError.UnknownCursorType(cursorType))
 
+  private def sortPart[FIELD: FieldSchema](sortBys: ListSet[SortBy[FIELD]]): String =
+    sortBys.map(sortBy => s"${sortBy.field.name}$fieldSeparator${orderPart(sortBy.order)}").mkString(listSeparator)
+
+  private def orderPart(order: Order): String =
+    order match
+      case Order.Ascending  => "A"
+      case Order.Descending => "D"
+
+  private def singleFilterPart[FIELD: FieldSchema](filter: FilterBy[FIELD]): String =
+    val filterType = filter match
+      case _: FilterBy.ExactMatch[?] => "exact"
+    s"${filter.field.name}$fieldSeparator$filterType$fieldSeparator${filter.value}"
+
   private def hash[FIELD: FieldSchema](query: Query[FIELD]): String =
-    val limit = limitPart(query.limit)
+    val limit = query.limit.value.toString
     val sort = sortPart(query.sortBys)
-    val filter = filterPart(query.filters)
+    val filter = query.filters.toSeq.map(singleFilterPart).sorted.mkString(listSeparator)
 
     MurmurHash3.stringHash(s"$limit$partSeparator$sort$partSeparator$filter").toString
 

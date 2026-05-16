@@ -22,7 +22,7 @@ case class Event(timestamp: String, source: String)
   val query = Query(
     filters = Set.empty,
     sortBys = ListSet(EventField.Timestamp.ascending),
-    limit = Some(Limit(1))
+    limit = Limit(1)
   )
 
   // Build a Page of results using the pagination helper.

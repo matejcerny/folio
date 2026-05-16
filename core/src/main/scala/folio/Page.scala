@@ -57,7 +57,7 @@ object Page:
       case None         => Right(DecodedCursor(Direction.Forward, firstPosition))
 
     currentDecodedCursor.traverse: current =>
-      val limit = query.limit.getOrElse(Limit.Default)
+      val limit = query.limit
       val isBackward = current.direction == Direction.Backward
       val baseSortBys = if query.sortBys.nonEmpty then query.sortBys else defaultSortBys
 

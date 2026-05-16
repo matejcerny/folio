@@ -24,7 +24,7 @@ given KeysetField[MessageField, Message] = KeysetField(MessageField.Id, _.id)
   val query = Query(
     filters = Set(FilterBy.ExactMatch(MessageField.LastReadAt, "2024-01-01")),
     sortBys = ListSet(MessageField.Id.ascending),
-    limit = Some(Limit(2))
+    limit = Limit(2)
   )
 
   // Build a Page of results using the pagination helper.

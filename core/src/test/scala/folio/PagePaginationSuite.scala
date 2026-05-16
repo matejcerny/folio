@@ -11,11 +11,11 @@ object PagePaginationSuite extends SimpleIOSuite:
 
   private val limit = Limit(2)
 
-  private val keysetQuery: Query[TestField] = TestFixtures.queryWithIdSort.copy(limit = Some(limit))
+  private val keysetQuery: Query[TestField] = TestFixtures.queryWithIdSort.copy(limit = limit)
   private val offsetQuery: Query[TestField] =
-    TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.CreatedAt.descending), limit = Some(limit))
+    TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.CreatedAt.descending), limit = limit)
   private val offsetOnlyQuery: Query[TestFieldNoId] =
-    TestFixtures.emptyQueryNoId.copy(sortBys = ListSet(TestFieldNoId.Timestamp.descending), limit = Some(limit))
+    TestFixtures.emptyQueryNoId.copy(sortBys = ListSet(TestFieldNoId.Timestamp.descending), limit = limit)
 
   private val rowTable: InMemoryTable[TestField, Row] = InMemoryTable(TestFixtures.rows, TestFixtures.rowExtract)
   private val eventTable: InMemoryTable[TestFieldNoId, EventRow] =
@@ -262,7 +262,7 @@ object PagePaginationSuite extends SimpleIOSuite:
   // ---------- realistic fetcher ----------
 
   private val realisticOffsetQuery: Query[TestField] =
-    TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.CreatedAt.ascending), limit = Some(limit))
+    TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.CreatedAt.ascending), limit = limit)
 
   pureTest("realistic offset: forward through full dataset returns contiguous slices"):
     val page1 = pageWith(rowTable.fetch, realisticOffsetQuery)
@@ -330,7 +330,7 @@ object PagePaginationSuite extends SimpleIOSuite:
   pureTest("realistic offset: sort by Name asc with Id asc tiebreak paginates alphabetically"):
     val nameSortQuery: Query[TestField] = TestFixtures.emptyQueryWithId.copy(
       sortBys = ListSet(TestField.Name.ascending, TestField.Id.ascending),
-      limit = Some(limit)
+      limit = limit
     )
     val page1 = pageWith(rowTable.fetch, nameSortQuery)
     val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
@@ -347,7 +347,7 @@ object PagePaginationSuite extends SimpleIOSuite:
   pureTest("realistic offset: sort by CreatedAt desc returns rows newest to oldest"):
     val createdDescQuery: Query[TestField] = TestFixtures.emptyQueryWithId.copy(
       sortBys = ListSet(TestField.CreatedAt.descending),
-      limit = Some(limit)
+      limit = limit
     )
     val page1 = pageWith(rowTable.fetch, createdDescQuery)
     val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
@@ -365,7 +365,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     val aliceQuery: Query[TestField] = Query(
       filters = Set(FilterBy.ExactMatch(TestField.Name, "alice")),
       sortBys = ListSet(TestField.CreatedAt.ascending),
-      limit = Some(limit),
+      limit = limit,
       cursor = None
     )
     val page1 = pageWith(rowTable.fetch, aliceQuery)
@@ -387,7 +387,7 @@ object PagePaginationSuite extends SimpleIOSuite:
   pureTest("realistic offset: multi-key sort (Name asc, CreatedAt desc) backward cursor returns prior slice"):
     val multiKeyQuery: Query[TestField] = TestFixtures.emptyQueryWithId.copy(
       sortBys = ListSet(TestField.Name.ascending, TestField.CreatedAt.descending),
-      limit = Some(limit)
+      limit = limit
     )
     val page1 = pageWith(rowTable.fetch, multiKeyQuery)
     val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
@@ -408,7 +408,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     val eventQuery: Query[TestFieldNoId] = Query(
       filters = Set(FilterBy.ExactMatch(TestFieldNoId.Source, "api")),
       sortBys = ListSet(TestFieldNoId.Timestamp.descending),
-      limit = Some(limit),
+      limit = limit,
       cursor = None
     )
     val (captured, page1) = pageCapturing(eventTable.fetch, eventQuery)
@@ -426,7 +426,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     val keysetFilteredQuery: Query[TestField] = Query(
       filters = Set(FilterBy.ExactMatch(TestField.Name, "alice")),
       sortBys = ListSet.empty,
-      limit = Some(limit),
+      limit = limit,
       cursor = None
     )
     val (captured1, page1) = pageCapturing(rowTable.fetch, keysetFilteredQuery)
@@ -446,7 +446,7 @@ object PagePaginationSuite extends SimpleIOSuite:
   // ---------- no-sort keyset default sort ----------
 
   pureTest("no-sort keyset: forward initial fetch resolves to default ascending id sort"):
-    val query = TestFixtures.emptyQueryWithId.copy(limit = Some(limit))
+    val query = TestFixtures.emptyQueryWithId.copy(limit = limit)
     val (captured, _) = pageCapturing(rowTable.fetch, query)
     List(
       expect.same(captured.map(_.sortBys), List(ListSet(TestField.Id.ascending))),
@@ -455,12 +455,12 @@ object PagePaginationSuite extends SimpleIOSuite:
 
   pureTest("no-sort keyset: backward fetch flips the default to descending id sort"):
     val current = DecodedCursor(Direction.Backward, Position.Keyset(Some(7L)))
-    val query = queryWithCurrent(TestFixtures.emptyQueryWithId.copy(limit = Some(limit)), current)
+    val query = queryWithCurrent(TestFixtures.emptyQueryWithId.copy(limit = limit), current)
     val (captured, _) = pageCapturing(rowTable.fetch, query)
     expect.same(captured.map(_.sortBys), List(ListSet(TestField.Id.descending)))
 
   pureTest("no-sort offset-only: empty sortBys still passed through (no IdField in scope)"):
-    val query = TestFixtures.emptyQueryNoId.copy(limit = Some(limit))
+    val query = TestFixtures.emptyQueryNoId.copy(limit = limit)
     val emptyFetch: ResolvedQuery[TestFieldNoId] => Seq[EventRow] = _ => Seq.empty
     val (captured, _) = pageCapturing(emptyFetch, query)
     List(

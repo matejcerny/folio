@@ -5,9 +5,9 @@ import scala.collection.immutable.ListSet
 case class Query[FIELD](
     filters: Set[FilterBy[FIELD]],
     sortBys: ListSet[SortBy[FIELD]],
-    limit: Option[Limit],
+    limit: Limit,
     cursor: Option[Cursor] = None
 )
 
 object Query:
-  def empty[FIELD]: Query[FIELD] = Query(Set.empty, ListSet.empty, None, None)
+  def empty[FIELD]: Query[FIELD] = Query(Set.empty, ListSet.empty, Limit.Default, None)

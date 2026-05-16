@@ -10,8 +10,8 @@ object QuerySuite extends SimpleIOSuite:
   pureTest("Query.empty has no cursor"):
     expect(clue(TestFixtures.emptyQueryWithId.cursor).isEmpty)
 
-  pureTest("Query.empty has no limit"):
-    expect(clue(TestFixtures.emptyQueryWithId.limit).isEmpty)
+  pureTest("Query.empty uses default limit"):
+    expect.same(TestFixtures.emptyQueryWithId.limit, Limit.Default)
 
   pureTest("Query.empty has no sortBys"):
     expect(clue(TestFixtures.emptyQueryWithId.sortBys).isEmpty)

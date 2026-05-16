@@ -84,7 +84,7 @@ object CursorSuite extends SimpleIOSuite:
 
   pureTest("stale cursor - limit changed"):
     val cursor = Cursor.encode(DecodedCursor(Direction.Forward, Position.Keyset(None)), baseQuery)
-    val modifiedQuery = baseQuery.copy(limit = Some(Limit(50)))
+    val modifiedQuery = baseQuery.copy(limit = Limit(50))
     val decoded = Cursor.decode(cursor, modifiedQuery)
 
     expect.same(decoded, Left(CursorDecodingError.StaleCursor))
