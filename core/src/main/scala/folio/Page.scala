@@ -52,9 +52,22 @@ object Page:
       firstPosition: Position,
       defaultSortBys: ListSet[SortBy[FIELD]]
   )(using CursorCodec): F[Either[CursorDecodingError, Page[T]]] =
-    val currentDecodedCursor = query.cursor match
-      case Some(cursor) => Cursor.decode(cursor, query)
-      case None         => Right(DecodedCursor(Direction.Forward, firstPosition))
+    val currentDecodedCursor: Either[CursorDecodingError, DecodedCursor] = query.cursor match
+      case Some(cursor) =>
+        Cursor
+          .decode(cursor, query)
+          .flatMap: decoded =>
+            (firstPosition, decoded.position) match
+              case (_: Position.Keyset, _: Position.Keyset) => Right(decoded)
+              case (_: Position.Offset, _: Position.Offset) => Right(decoded)
+              case _                                        =>
+                Left(
+                  CursorDecodingError.StrategyMismatch(
+                    expected = firstPosition,
+                    actual = decoded.position
+                  )
+                )
+      case None => Right(DecodedCursor(Direction.Forward, firstPosition))
 
     currentDecodedCursor.traverse: current =>
       val limit = query.limit

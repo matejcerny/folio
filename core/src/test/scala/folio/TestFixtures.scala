@@ -33,7 +33,7 @@ object TestFixtures:
     Query(
       filters = Set(FilterBy.ExactMatch(TestField.Name, "alice")),
       cursor = None,
-      limit = Limit(20),
+      limit = 20.items,
       sortBys = ListSet(TestField.CreatedAt.descending, TestField.Id.ascending)
     )
 

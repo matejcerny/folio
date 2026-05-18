@@ -30,7 +30,7 @@ object CursorSuite extends SimpleIOSuite:
     expect.same(roundtrip, Right(decoded))
 
   pureTest("roundtrip for forward Incremental(100)"):
-    val decoded = DecodedCursor(Direction.Forward, Position.Offset(100L))
+    val decoded = DecodedCursor(Direction.Forward, Position.Offset.unsafe(100L))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
 
@@ -44,7 +44,7 @@ object CursorSuite extends SimpleIOSuite:
     expect.same(roundtrip, Right(decoded))
 
   pureTest("roundtrip for backward Incremental(100)"):
-    val decoded = DecodedCursor(Direction.Backward, Position.Offset(100L))
+    val decoded = DecodedCursor(Direction.Backward, Position.Offset.unsafe(100L))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
 
@@ -84,7 +84,7 @@ object CursorSuite extends SimpleIOSuite:
 
   pureTest("stale cursor - limit changed"):
     val cursor = Cursor.encode(DecodedCursor(Direction.Forward, Position.Keyset(None)), baseQuery)
-    val modifiedQuery = baseQuery.copy(limit = Limit(50))
+    val modifiedQuery = baseQuery.copy(limit = 50.items)
     val decoded = Cursor.decode(cursor, modifiedQuery)
 
     expect.same(decoded, Left(CursorDecodingError.StaleCursor))
@@ -128,7 +128,7 @@ object CursorSuite extends SimpleIOSuite:
 
   pureTest("roundtrip with fully populated query"):
     val query = TestFixtures.fullyPopulatedQuery
-    val decoded = DecodedCursor(Direction.Forward, Position.Offset(40L))
+    val decoded = DecodedCursor(Direction.Forward, Position.Offset.unsafe(40L))
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 

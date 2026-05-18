@@ -15,3 +15,9 @@ object FolioError:
     case class UnknownDirection(direction: String) extends CursorDecodingError(s"Unknown direction: '$direction'")
     case class MalformedOffset(offset: String)
         extends CursorDecodingError(s"Invalid cursor: malformed offset '$offset'")
+    case class NegativeOffset(offset: Long)
+        extends CursorDecodingError(s"Invalid cursor: offset must be non-negative, got $offset")
+    case class StrategyMismatch(expected: Position, actual: Position)
+        extends CursorDecodingError(
+          s"Cursor strategy mismatch: query expects ${expected.asString}, cursor carries ${actual.asString}"
+        )

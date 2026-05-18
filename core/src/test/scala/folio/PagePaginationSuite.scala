@@ -5,11 +5,12 @@ import scala.collection.immutable.ListSet
 import cats.Id
 import cats.data.Writer
 import cats.syntax.foldable.*
+import folio.FolioError.CursorDecodingError
 import weaver.SimpleIOSuite
 
 object PagePaginationSuite extends SimpleIOSuite:
 
-  private val limit = Limit(2)
+  private val limit = 2.items
 
   private val keysetQuery: Query[TestField] = TestFixtures.queryWithIdSort.copy(limit = limit)
   private val offsetQuery: Query[TestField] =
@@ -144,7 +145,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     val next = page.nextCursor.map(decodedOf(_, offsetQuery))
     List(
       expect.same(page.previousCursor, None),
-      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset(2L))))
+      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset.unsafe(2L))))
     ).combineAll
 
   pureTest("offset: initial forward with hasMore=false emits no cursors"):
@@ -156,19 +157,19 @@ object PagePaginationSuite extends SimpleIOSuite:
     ).combineAll
 
   pureTest("offset: mid-page forward with hasMore=true emits both"):
-    val current = DecodedCursor(Direction.Forward, Position.Offset(30L))
+    val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(30L))
     val query = queryWithCurrent(offsetQuery, current)
     val rowsPlusOne = syntheticRows(1, 2, 3)
     val page = pageOrFail(rowsPlusOne, query)
     val next = page.nextCursor.map(decodedOf(_, query))
     val previous = page.previousCursor.map(decodedOf(_, query))
     List(
-      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset(32L)))),
-      expect.same(previous, Some(DecodedCursor(Direction.Backward, Position.Offset(28L))))
+      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset.unsafe(32L)))),
+      expect.same(previous, Some(DecodedCursor(Direction.Backward, Position.Offset.unsafe(28L))))
     ).combineAll
 
   pureTest("offset: mid-page forward with hasMore=false emits previous only, clamped at zero"):
-    val current = DecodedCursor(Direction.Forward, Position.Offset(1L))
+    val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(1L))
     val query = queryWithCurrent(offsetQuery, current)
     val rowsPlusOne = syntheticRows(1)
     val page = pageOrFail(rowsPlusOne, query)
@@ -179,26 +180,26 @@ object PagePaginationSuite extends SimpleIOSuite:
     ).combineAll
 
   pureTest("offset: backward with hasMore=true emits both"):
-    val current = DecodedCursor(Direction.Backward, Position.Offset(30L))
+    val current = DecodedCursor(Direction.Backward, Position.Offset.unsafe(30L))
     val query = queryWithCurrent(offsetQuery, current)
     val rowsPlusOne = syntheticRows(1, 2, 3)
     val page = pageOrFail(rowsPlusOne, query)
     val next = page.nextCursor.map(decodedOf(_, query))
     val previous = page.previousCursor.map(decodedOf(_, query))
     List(
-      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset(32L)))),
-      expect.same(previous, Some(DecodedCursor(Direction.Backward, Position.Offset(28L))))
+      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset.unsafe(32L)))),
+      expect.same(previous, Some(DecodedCursor(Direction.Backward, Position.Offset.unsafe(28L))))
     ).combineAll
 
   pureTest("offset: backward with hasMore=false emits next only"):
-    val current = DecodedCursor(Direction.Backward, Position.Offset(30L))
+    val current = DecodedCursor(Direction.Backward, Position.Offset.unsafe(30L))
     val query = queryWithCurrent(offsetQuery, current)
     val rowsPlusOne = syntheticRows(1)
     val page = pageOrFail(rowsPlusOne, query)
     val next = page.nextCursor.map(decodedOf(_, query))
     List(
       expect.same(page.previousCursor, None),
-      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset(32L))))
+      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset.unsafe(32L))))
     ).combineAll
 
   // ---------- offset-only (no IdField) ----------
@@ -212,7 +213,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     List(
       expect.same(page.previousCursor, None),
       expect.same(page.data, syntheticRows(1, 2)),
-      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset(2L))))
+      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset.unsafe(2L))))
     ).combineAll
 
   pureTest("offset-only: initial forward with hasMore=false emits no cursors"):
@@ -225,38 +226,38 @@ object PagePaginationSuite extends SimpleIOSuite:
     ).combineAll
 
   pureTest("offset-only: mid-page forward with hasMore=true emits both"):
-    val current = DecodedCursor(Direction.Forward, Position.Offset(30L))
+    val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(30L))
     val query = queryWithCurrent(offsetOnlyQuery, current)
     val rowsPlusOne = syntheticRows(1, 2, 3)
     val page = pageOrFail(rowsPlusOne, query)
     val next = page.nextCursor.map(decodedOf(_, query))
     val previous = page.previousCursor.map(decodedOf(_, query))
     List(
-      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset(32L)))),
-      expect.same(previous, Some(DecodedCursor(Direction.Backward, Position.Offset(28L))))
+      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset.unsafe(32L)))),
+      expect.same(previous, Some(DecodedCursor(Direction.Backward, Position.Offset.unsafe(28L))))
     ).combineAll
 
   pureTest("offset-only: backward with hasMore=true emits both"):
-    val current = DecodedCursor(Direction.Backward, Position.Offset(30L))
+    val current = DecodedCursor(Direction.Backward, Position.Offset.unsafe(30L))
     val query = queryWithCurrent(offsetOnlyQuery, current)
     val rowsPlusOne = syntheticRows(1, 2, 3)
     val page = pageOrFail(rowsPlusOne, query)
     val next = page.nextCursor.map(decodedOf(_, query))
     val previous = page.previousCursor.map(decodedOf(_, query))
     List(
-      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset(32L)))),
-      expect.same(previous, Some(DecodedCursor(Direction.Backward, Position.Offset(28L))))
+      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset.unsafe(32L)))),
+      expect.same(previous, Some(DecodedCursor(Direction.Backward, Position.Offset.unsafe(28L))))
     ).combineAll
 
   pureTest("offset-only: previous offset clamped at zero"):
-    val current = DecodedCursor(Direction.Forward, Position.Offset(1L))
+    val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(1L))
     val query = queryWithCurrent(offsetOnlyQuery, current)
     val rowsPlusOne = syntheticRows(1)
     val page = pageOrFail(rowsPlusOne, query)
     val previous = page.previousCursor.map(decodedOf(_, query))
     List(
       expect.same(page.nextCursor, None),
-      expect.same(previous, Some(DecodedCursor(Direction.Backward, Position.Offset(0L))))
+      expect.same(previous, Some(DecodedCursor(Direction.Backward, Position.Offset.unsafe(0L))))
     ).combineAll
 
   // ---------- realistic fetcher ----------
@@ -286,17 +287,17 @@ object PagePaginationSuite extends SimpleIOSuite:
     ).combineAll
 
   pureTest("realistic offset: backward returns previous slice in original sort order"):
-    val current = DecodedCursor(Direction.Backward, Position.Offset(4L))
+    val current = DecodedCursor(Direction.Backward, Position.Offset.unsafe(4L))
     val query = queryWithCurrent(realisticOffsetQuery, current)
     val (captured, page) = pageCapturing(rowTable.fetch, query)
     val next = page.nextCursor.map(decodedOf(_, query))
     val previous = page.previousCursor.map(decodedOf(_, query))
     List(
       expect.same(captured.map(_.sortBys), List(ListSet(TestField.CreatedAt.ascending))),
-      expect.same(captured.map(_.position), List(Position.Offset(4L))),
+      expect.same(captured.map(_.position), List(Position.Offset.unsafe(4L))),
       expect.same(page.data.map(_.id), Seq(0L, 5L)),
-      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset(6L)))),
-      expect.same(previous, Some(DecodedCursor(Direction.Backward, Position.Offset(2L))))
+      expect.same(next, Some(DecodedCursor(Direction.Forward, Position.Offset.unsafe(6L)))),
+      expect.same(previous, Some(DecodedCursor(Direction.Backward, Position.Offset.unsafe(2L))))
     ).combineAll
 
   pureTest("realistic offset: round-trip forward/previous/next returns to starting page"):
@@ -465,5 +466,43 @@ object PagePaginationSuite extends SimpleIOSuite:
     val (captured, _) = pageCapturing(emptyFetch, query)
     List(
       expect.same(captured.map(_.sortBys), List(ListSet.empty[SortBy[TestFieldNoId]])),
-      expect.same(captured.map(_.position), List(Position.Offset(0L)))
+      expect.same(captured.map(_.position), List(Position.Offset.unsafe(0L)))
     ).combineAll
+
+  // ---------- strategy mismatch ----------
+
+  pureTest("mismatch: keyset cursor against offset query (KeysetField in scope, non-id sort) is rejected"):
+    val current = DecodedCursor(Direction.Forward, Position.Keyset(Some(5L)))
+    val query = queryWithCurrent(offsetQuery, current)
+    val result = Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected"))
+    expect.same(
+      result,
+      Left(CursorDecodingError.StrategyMismatch(Position.Offset.First, Position.Keyset(Some(5L))))
+    )
+
+  pureTest("mismatch: keyset cursor against offset-only query (no KeysetField) is rejected"):
+    val current = DecodedCursor(Direction.Forward, Position.Keyset(Some(5L)))
+    val query = queryWithCurrent(offsetOnlyQuery, current)
+    val result = Page.withPagination[Id, EventRow, TestFieldNoId](query, _ => sys.error("fetch not expected"))
+    expect.same(
+      result,
+      Left(CursorDecodingError.StrategyMismatch(Position.Offset.First, Position.Keyset(Some(5L))))
+    )
+
+  pureTest("mismatch: offset cursor against keyset query (id sort) is rejected"):
+    val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(10L))
+    val query = queryWithCurrent(keysetQuery, current)
+    val result = Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected"))
+    expect.same(
+      result,
+      Left(CursorDecodingError.StrategyMismatch(Position.Keyset.First, Position.Offset.unsafe(10L)))
+    )
+
+  pureTest("mismatch: offset cursor against no-sort keyset default is rejected"):
+    val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(10L))
+    val query = queryWithCurrent(TestFixtures.emptyQueryWithId.copy(limit = limit), current)
+    val result = Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected"))
+    expect.same(
+      result,
+      Left(CursorDecodingError.StrategyMismatch(Position.Keyset.First, Position.Offset.unsafe(10L)))
+    )

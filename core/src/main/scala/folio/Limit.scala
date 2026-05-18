@@ -3,10 +3,30 @@ package folio
 opaque type Limit = Int
 
 object Limit:
-  def apply(n: Int): Limit = n
-  val Default: Limit = 10
+  inline val MaxValue = 100_000
+
+  val Default: Limit = unsafe(10)
+
+  private def condition(n: Int): Boolean = n > 0 && n <= MaxValue
+  private def errorMessage(n: Int): String = s"Limit must be in range (0, $MaxValue], got $n"
+
+  def apply(n: Int): Either[String, Limit] =
+    Either.cond(condition(n), n, errorMessage(n))
+
+  def unsafe(n: Int): Limit =
+    require(condition(n), errorMessage(n))
+    n
 
   extension (limit: Limit)
     def value: Int = limit
-    private[folio] def fetchLimit: Limit = Limit(limit + 1)
+    private[folio] def fetchLimit: Limit = limit + 1
     private[folio] def hasMore(items: Seq[?]): Boolean = items.lengthCompare(limit) > 0
+
+extension (n: Int)
+  /** Construct a [[Limit]] from an integer literal with a compile-time range check.
+    *
+    * Example: `10.items`
+    */
+  inline def items: Limit =
+    inline if n > 0 && n <= Limit.MaxValue then Limit.unsafe(n)
+    else scala.compiletime.error("Limit must be in range (0, 100_000]")

@@ -77,8 +77,10 @@ object Cursor:
     cursorType match
       case `keysetCursorType` if offsetString.isEmpty => Right(Position.Keyset(None))
       case `keysetCursorType`                         => offsetLong(offsetString).map(id => Position.Keyset(Some(id)))
-      case `offsetCursorType`                         => offsetLong(offsetString).map(offset => Position.Offset(offset))
-      case _                                          => Left(CursorDecodingError.UnknownCursorType(cursorType))
+      case `offsetCursorType`                         =>
+        offsetLong(offsetString).flatMap: offset =>
+          Position.Offset(offset).left.map(_ => CursorDecodingError.NegativeOffset(offset))
+      case _ => Left(CursorDecodingError.UnknownCursorType(cursorType))
 
   private def sortPart[FIELD: FieldSchema](sortBys: ListSet[SortBy[FIELD]]): String =
     sortBys.map(sortBy => s"${sortBy.field.name}$fieldSeparator${orderPart(sortBy.order)}").mkString(listSeparator)

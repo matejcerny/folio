@@ -24,7 +24,7 @@ object CursorCodecSuite extends SimpleIOSuite:
     val query = Query
       .empty[TestField]
       .copy(filters = Set(FilterBy.ExactMatch(TestField.Name, "hello+world/foo=bar")))
-    val decoded = DecodedCursor(Direction.Forward, Position.Offset(42L))
+    val decoded = DecodedCursor(Direction.Forward, Position.Offset.unsafe(42L))
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 
