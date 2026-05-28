@@ -7,18 +7,18 @@ object FieldSchemaSuite extends SimpleIOSuite:
 
   pureTest("name extension returns correct column name"):
     List(
-      expect.same(TestField.Id.name, "id"),
-      expect.same(TestField.Name.name, "name"),
-      expect.same(TestField.CreatedAt.name, "created_at")
+      expect.same("id", TestField.Id.name),
+      expect.same("name", TestField.Name.name),
+      expect.same("created_at", TestField.CreatedAt.name)
     ).combineAll
 
   pureTest("fromName roundtrip for all fields"):
     val schema = summon[FieldSchema[TestField]]
 
     List(
-      expect.same(schema.fromName("id"), Right(TestField.Id)),
-      expect.same(schema.fromName("name"), Right(TestField.Name)),
-      expect.same(schema.fromName("created_at"), Right(TestField.CreatedAt))
+      expect.same(Right(TestField.Id), schema.fromName("id")),
+      expect.same(Right(TestField.Name), schema.fromName("name")),
+      expect.same(Right(TestField.CreatedAt), schema.fromName("created_at"))
     ).combineAll
 
   pureTest("fromName returns Left for unknown name"):

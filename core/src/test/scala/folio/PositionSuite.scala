@@ -12,26 +12,26 @@ object PositionSuite extends SimpleIOSuite:
     val query = Query.empty[TestField].copy(sortBys = ListSet(TestField.Id.ascending))
     val position = Position.fromQuery(query)
 
-    expect.same(position, Position.Keyset(Nil))
+    expect.same(Position.Keyset(Nil), position)
 
   pureTest("IdField present + primary sort is other field returns Incremental(First)"):
     val query = Query.empty[TestField].copy(sortBys = ListSet(TestField.CreatedAt.descending))
     val position = Position.fromQuery(query)
 
-    expect.same(position, Position.Offset.First)
+    expect.same(Position.Offset.First, position)
 
   pureTest("IdField present + no sort returns Keyset(Nil)"):
     val position = Position.fromQuery(Query.empty[TestField])
 
-    expect.same(position, Position.Keyset(Nil))
+    expect.same(Position.Keyset(Nil), position)
 
   pureTest("no IdField always returns Incremental(First)"):
     val position = Position.fromQuery(Query.empty[TestFieldNoId])
 
-    expect.same(position, Position.Offset.First)
+    expect.same(Position.Offset.First, position)
 
   pureTest("no IdField with sort still returns Incremental(First)"):
     val query = Query.empty[TestFieldNoId].copy(sortBys = ListSet(TestFieldNoId.Timestamp.ascending))
     val position = Position.fromQuery(query)
 
-    expect.same(position, Position.Offset.First)
+    expect.same(Position.Offset.First, position)

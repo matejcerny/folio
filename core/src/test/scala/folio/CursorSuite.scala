@@ -23,40 +23,39 @@ object CursorSuite extends SimpleIOSuite:
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
 
-    expect.same(roundtrip, Right(decoded))
+    expect.same(Right(decoded), roundtrip)
 
   pureTest("roundtrip for forward Keyset(LongV(42))"):
     val decoded = DecodedCursor(Direction.Forward, keysetOf(42L))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
 
-    expect.same(roundtrip, Right(decoded))
+    expect.same(Right(decoded), roundtrip)
 
   pureTest("roundtrip for forward Offset(100)"):
     val decoded = DecodedCursor(Direction.Forward, Position.Offset.unsafe(100L))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
 
-    expect.same(roundtrip, Right(decoded))
+    expect.same(Right(decoded), roundtrip)
 
   pureTest("roundtrip for backward Keyset(LongV(42))"):
     val decoded = DecodedCursor(Direction.Backward, keysetOf(42L))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
 
-    expect.same(roundtrip, Right(decoded))
+    expect.same(Right(decoded), roundtrip)
 
   pureTest("roundtrip for backward Offset(100)"):
     val decoded = DecodedCursor(Direction.Backward, Position.Offset.unsafe(100L))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
 
-    expect.same(roundtrip, Right(decoded))
+    expect.same(Right(decoded), roundtrip)
 
-  pureTest("roundtrip for keyset with multiple String values"):
+  pureTest("encoding for keyset with multiple String values"):
     val decoded = DecodedCursor(Direction.Forward, keysetOf("foo", "bar"))
     val cursor = Cursor.encode(decoded, baseQuery)
-    val roundtrip = Cursor.decode(cursor, baseQuery)
 
     // flags=0x02 (Forward, Keyset) | hash=H | count=2 | tag=03 len=3 "foo" | tag=03 len=3 "bar"
     val expected = CursorTestKit.concat(
@@ -68,24 +67,28 @@ object CursorSuite extends SimpleIOSuite:
       CursorTestKit.hex("03 03"),
       "bar".getBytes("UTF-8")
     )
-    List(
-      expect.same(decodeBase64Url(cursor.value).toSeq, expected.toSeq),
-      expect.same(roundtrip, Right(decoded))
-    ).combineAll
+    expect.same(expected.toSeq, decodeBase64Url(cursor.value).toSeq)
 
-  pureTest("roundtrip for keyset value containing the legacy length separator"):
-    val decoded = DecodedCursor(Direction.Forward, keysetOf("a::b", "c"))
+  pureTest("decoding rejects keyset with arity above maxKeysetArity"):
+    val decoded = DecodedCursor(Direction.Forward, keysetOf("foo", "bar"))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
 
-    expect.same(roundtrip, Right(decoded))
+    expect.same(Left(CursorDecodingError.KeysetArityExceeded(2L, 1)), roundtrip)
+
+  pureTest("roundtrip for keyset value containing the legacy length separator"):
+    val decoded = DecodedCursor(Direction.Forward, keysetOf("a::b"))
+    val cursor = Cursor.encode(decoded, baseQuery)
+    val roundtrip = Cursor.decode(cursor, baseQuery)
+
+    expect.same(Right(decoded), roundtrip)
 
   pureTest("roundtrip for keyset value containing the legacy part separator"):
     val decoded = DecodedCursor(Direction.Forward, keysetOf("a;b;c"))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
 
-    expect.same(roundtrip, Right(decoded))
+    expect.same(Right(decoded), roundtrip)
 
   pureTest("roundtrip for keyset with single empty-string value"):
     val decoded = DecodedCursor(Direction.Forward, keysetOf(""))
@@ -99,15 +102,15 @@ object CursorSuite extends SimpleIOSuite:
       CursorTestKit.hex("01 03 00")
     )
     List(
-      expect.same(decodeBase64Url(cursor.value).toSeq, expected.toSeq),
-      expect.same(roundtrip, Right(decoded))
+      expect.same(expected.toSeq, decodeBase64Url(cursor.value).toSeq),
+      expect.same(Right(decoded), roundtrip)
     ).combineAll
 
   pureTest("first-page keyset cursor encodes to 6 bytes"):
     val decoded = DecodedCursor(Direction.Forward, Position.Keyset(Nil))
     val cursor = Cursor.encode(decoded, baseQuery)
 
-    expect.same(decodeBase64Url(cursor.value).length, 6)
+    expect.same(6, decodeBase64Url(cursor.value).length)
 
   pureTest("deterministic encoding - same input produces same output"):
     val decoded = DecodedCursor(Direction.Forward, keysetOf(7L))
@@ -133,41 +136,41 @@ object CursorSuite extends SimpleIOSuite:
     val position = keysetOf(5L)
     def fingerprint(direction: Direction): Seq[Byte] =
       decodeBase64Url(Cursor.encode(DecodedCursor(direction, position), baseQuery).value).slice(1, 5).toSeq
-    expect.same(fingerprint(Direction.Forward), fingerprint(Direction.Backward))
+    expect.same(fingerprint(Direction.Backward), fingerprint(Direction.Forward))
 
   pureTest("stale cursor - limit changed"):
     val cursor = Cursor.encode(DecodedCursor(Direction.Forward, Position.Keyset(Nil)), baseQuery)
     val modifiedQuery = baseQuery.copy(limit = 50.items)
     val decoded = Cursor.decode(cursor, modifiedQuery)
 
-    expect.same(decoded, Left(CursorDecodingError.StaleCursor))
+    expect.same(Left(CursorDecodingError.StaleCursor), decoded)
 
   pureTest("stale cursor - sort changed"):
     val cursor = Cursor.encode(DecodedCursor(Direction.Forward, Position.Keyset(Nil)), baseQuery)
     val modifiedQuery = baseQuery.copy(sortBys = ListSet(TestField.Name.ascending))
     val decoded = Cursor.decode(cursor, modifiedQuery)
 
-    expect.same(decoded, Left(CursorDecodingError.StaleCursor))
+    expect.same(Left(CursorDecodingError.StaleCursor), decoded)
 
   pureTest("stale cursor - filter changed"):
     val cursor = Cursor.encode(DecodedCursor(Direction.Forward, Position.Keyset(Nil)), baseQuery)
     val modifiedQuery = baseQuery.copy(filters = Set(FilterBy.ExactMatch(TestField.Name, "bob")))
     val decoded = Cursor.decode(cursor, modifiedQuery)
 
-    expect.same(decoded, Left(CursorDecodingError.StaleCursor))
+    expect.same(Left(CursorDecodingError.StaleCursor), decoded)
 
   pureTest("decode returns Truncated for empty input"):
     val cursor = Cursor(Base64.getUrlEncoder.withoutPadding.encodeToString(Array.emptyByteArray))
     val decoded = Cursor.decode(cursor, baseQuery)
 
-    expect.same(decoded, Left(CursorDecodingError.Truncated("flags")))
+    expect.same(Left(CursorDecodingError.Truncated("flags")), decoded)
 
   pureTest("decode returns Truncated for missing fingerprint bytes"):
     // only flags byte present
     val cursor = Cursor(Base64.getUrlEncoder.withoutPadding.encodeToString(Array(0x02.toByte)))
     val decoded = Cursor.decode(cursor, baseQuery)
 
-    expect.same(decoded, Left(CursorDecodingError.Truncated("fingerprint")))
+    expect.same(Left(CursorDecodingError.Truncated("fingerprint")), decoded)
 
   pureTest("decode returns Truncated for missing offset varint"):
     val cursor = CursorTestKit.buildCursor(
@@ -177,7 +180,7 @@ object CursorSuite extends SimpleIOSuite:
     )
     val decoded = Cursor.decode(cursor, baseQuery)
 
-    expect.same(decoded, Left(CursorDecodingError.Truncated("offset")))
+    expect.same(Left(CursorDecodingError.Truncated("offset")), decoded)
 
   pureTest("decode returns Truncated for missing keyset count varint"):
     val cursor = CursorTestKit.buildCursor(
@@ -187,7 +190,7 @@ object CursorSuite extends SimpleIOSuite:
     )
     val decoded = Cursor.decode(cursor, baseQuery)
 
-    expect.same(decoded, Left(CursorDecodingError.Truncated("keyset count")))
+    expect.same(Left(CursorDecodingError.Truncated("keyset count")), decoded)
 
   pureTest("decode returns Truncated when keyset count promises more values than present"):
     // count=1 but no value bytes follow
@@ -198,7 +201,7 @@ object CursorSuite extends SimpleIOSuite:
     )
     val decoded = Cursor.decode(cursor, baseQuery)
 
-    expect.same(decoded, Left(CursorDecodingError.Truncated("keyset tag")))
+    expect.same(Left(CursorDecodingError.Truncated("keyset tag")), decoded)
 
   pureTest("decode returns Truncated when StringV length exceeds remaining"):
     // count=1 tag=03 len=9 but only 3 bytes follow
@@ -209,7 +212,7 @@ object CursorSuite extends SimpleIOSuite:
     )
     val decoded = Cursor.decode(cursor, baseQuery)
 
-    expect.same(decoded, Left(CursorDecodingError.Truncated("StringV bytes")))
+    expect.same(Left(CursorDecodingError.Truncated("StringV bytes")), decoded)
 
   pureTest("decode returns MalformedFlags when reserved bits are set"):
     val flags = 0x40.toByte
@@ -220,7 +223,7 @@ object CursorSuite extends SimpleIOSuite:
     )
     val decoded = Cursor.decode(cursor, baseQuery)
 
-    expect.same(decoded, Left(CursorDecodingError.MalformedFlags(flags)))
+    expect.same(Left(CursorDecodingError.MalformedFlags(flags)), decoded)
 
   pureTest("decode returns MalformedVarint for an over-long varint"):
     // 11 bytes of 0xff (continuation) — exceeds 10-byte varint limit
@@ -232,7 +235,7 @@ object CursorSuite extends SimpleIOSuite:
     )
     val decoded = Cursor.decode(cursor, baseQuery)
 
-    expect.same(decoded, Left(CursorDecodingError.MalformedVarint))
+    expect.same(Left(CursorDecodingError.MalformedVarint), decoded)
 
   pureTest("decode returns UnknownKeysetTag for an unrecognised tag byte"):
     // count=1 tag=0x09
@@ -243,7 +246,7 @@ object CursorSuite extends SimpleIOSuite:
     )
     val decoded = Cursor.decode(cursor, baseQuery)
 
-    expect.same(decoded, Left(CursorDecodingError.UnknownKeysetTag(0x09.toByte)))
+    expect.same(Left(CursorDecodingError.UnknownKeysetTag(0x09.toByte)), decoded)
 
   pureTest("decode returns TrailingBytes when extra bytes follow a complete frame"):
     // valid offset payload (varint 0) plus one extra byte
@@ -254,7 +257,7 @@ object CursorSuite extends SimpleIOSuite:
     )
     val decoded = Cursor.decode(cursor, baseQuery)
 
-    expect.same(decoded, Left(CursorDecodingError.TrailingBytes(1)))
+    expect.same(Left(CursorDecodingError.TrailingBytes(1)), decoded)
 
   pureTest("decode returns MalformedOffset when offset varint decodes to a negative Long"):
     // 10 bytes whose varint decodes to -1L when interpreted as a signed Long
@@ -266,9 +269,9 @@ object CursorSuite extends SimpleIOSuite:
     )
     val decoded = Cursor.decode(cursor, baseQuery)
 
-    expect.same(decoded, Left(CursorDecodingError.MalformedOffset(-1L)))
+    expect.same(Left(CursorDecodingError.MalformedOffset(-1L)), decoded)
 
-  pureTest("decode returns MalformedTimestamp for an out-of-range zone offset"):
+  pureTest("decode returns MalformedTimestampField for an out-of-range zone offset"):
     // count=1 tag=04 (TimestampV) epochSecond=0 nano=0 offsetSeconds=100000 (above ±18h ZoneOffset limit)
     val payload = CursorTestKit.hex("01 04 00 00 C0 9A 0C")
     val cursor = CursorTestKit.buildCursor(
@@ -277,8 +280,65 @@ object CursorSuite extends SimpleIOSuite:
       payload = payload
     )
     Cursor.decode(cursor, baseQuery) match
-      case Left(_: CursorDecodingError.MalformedTimestamp) => success
-      case other                                           => failure(s"expected MalformedTimestamp, got $other")
+      case Left(_: CursorDecodingError.MalformedTimestampField) => success
+      case other => failure(s"expected MalformedTimestampField, got $other")
+
+  pureTest("decode rejects forged keyset cursor with huge varint count without allocating"):
+    // varint = 0xff 0xff 0xff 0xff 0x07 -> ~2^31, far above MaxKeysetArity
+    val cursor = CursorTestKit.buildCursor(
+      flags = 0x02.toByte,
+      hash = CursorTestKit.hashBytes(baseQuery),
+      payload = CursorTestKit.hex("ff ff ff ff 07")
+    )
+    Cursor.decode(cursor, baseQuery) match
+      case Left(CursorDecodingError.KeysetArityExceeded(_, 1)) => success
+      case other                                               => failure(s"expected KeysetArityExceeded, got $other")
+
+  pureTest("decode rejects forged keyset cursor with arity 2"):
+    val cursor = CursorTestKit.buildCursor(
+      flags = 0x02.toByte,
+      hash = CursorTestKit.hashBytes(baseQuery),
+      payload = CursorTestKit.hex("02")
+    )
+    val decoded = Cursor.decode(cursor, baseQuery)
+
+    expect.same(Left(CursorDecodingError.KeysetArityExceeded(2L, 1)), decoded)
+
+  pureTest("decode rejects forged keyset cursor whose varint count overflows Long signedness"):
+    // 10 bytes whose varint decodes to a negative Long when interpreted as signed
+    val payload = Array.fill(9)(0xff.toByte) :+ 0x01.toByte
+    val cursor = CursorTestKit.buildCursor(
+      flags = 0x02.toByte,
+      hash = CursorTestKit.hashBytes(baseQuery),
+      payload = payload
+    )
+    Cursor.decode(cursor, baseQuery) match
+      case Left(CursorDecodingError.KeysetArityExceeded(count, 1)) if count < 0L => success
+      case other => failure(s"expected KeysetArityExceeded with negative count, got $other")
+
+  pureTest("decode rejects forged IntV with zigzag-decoded value above Int.MaxValue with IntOutOfRange"):
+    // count=1 tag=01 (IntV) value varint = 0x80 0x80 0x80 0x80 0x10 (zigzagEncode of Int.MaxValue + 1L)
+    val cursor = CursorTestKit.buildCursor(
+      flags = 0x02.toByte,
+      hash = CursorTestKit.hashBytes(baseQuery),
+      payload = CursorTestKit.hex("01 01 80 80 80 80 10")
+    )
+    val outOfRange = Int.MaxValue.toLong + 1L
+    expect.same(
+      Left(CursorDecodingError.IntOutOfRange("IntV value", outOfRange)),
+      Cursor.decode(cursor, baseQuery)
+    )
+
+  pureTest("decode returns MalformedStringLength for a forged StringV with huge length"):
+    // count=1 tag=03 (StringV) length varint = 0x80 0x80 0x80 0x80 0x08 (decodes to 2^31, > Int.MaxValue)
+    val cursor = CursorTestKit.buildCursor(
+      flags = 0x02.toByte,
+      hash = CursorTestKit.hashBytes(baseQuery),
+      payload = CursorTestKit.hex("01 03 80 80 80 80 08")
+    )
+    Cursor.decode(cursor, baseQuery) match
+      case Left(CursorDecodingError.MalformedStringLength(_, length)) if length > Int.MaxValue.toLong => success
+      case other => failure(s"expected MalformedStringLength with length > Int.MaxValue, got $other")
 
   pureTest("roundtrip with fully populated query"):
     val query = TestFixtures.fullyPopulatedQuery
@@ -286,4 +346,4 @@ object CursorSuite extends SimpleIOSuite:
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 
-    expect.same(roundtrip, Right(decoded))
+    expect.same(Right(decoded), roundtrip)

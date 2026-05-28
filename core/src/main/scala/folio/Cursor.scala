@@ -22,6 +22,9 @@ object Cursor:
   private val tagStringV: Byte = 0x03
   private val tagTimestampV: Byte = 0x04
 
+  // Must move together with CursorAdvance.keysetAware when multi-column keyset lands.
+  private val maxKeysetArity: Int = 1
+
   def apply(value: String): Cursor = value
 
   def encode[FIELD: FieldSchema](decoded: DecodedCursor, query: Query[FIELD])(using codec: CursorCodec): Cursor =
@@ -90,7 +93,14 @@ object Cursor:
 
   private val readKeysetPosition: Read[Position] =
     readUnsignedVarint("keyset count").flatMap: count =>
-      readKeysetValues(count.toInt).map(Position.Keyset.apply)
+      Either
+        .cond(
+          count >= 0L && count <= maxKeysetArity.toLong,
+          count.toInt,
+          CursorDecodingError.KeysetArityExceeded(count, maxKeysetArity)
+        )
+        .liftRead
+        .flatMap(readKeysetValues(_).map(Position.Keyset.apply))
 
   private def sortPart[FIELD: FieldSchema](sortBys: ListSet[SortBy[FIELD]]): String =
     sortBys.map(sortBy => s"${sortBy.field.name}:${orderPart(sortBy.order)}").mkString(",")

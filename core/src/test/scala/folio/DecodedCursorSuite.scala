@@ -11,7 +11,7 @@ object DecodedCursorSuite extends SimpleIOSuite:
     val cursor = query.toCursor()
 
     Cursor.decode(cursor, query) match
-      case Right(decoded) => expect.same(decoded.direction, Direction.Forward)
+      case Right(decoded) => expect.same(Direction.Forward, decoded.direction)
       case Left(error)    => failure(s"decode failed: $error")
 
   pureTest("query.toCursor uses CursorPosition.fromQuery for position"):
@@ -19,7 +19,7 @@ object DecodedCursorSuite extends SimpleIOSuite:
     val cursor = query.toCursor()
 
     Cursor.decode(cursor, query) match
-      case Right(decoded) => expect.same(decoded.position, Position.fromQuery(query))
+      case Right(decoded) => expect.same(Position.fromQuery(query), decoded.position)
       case Left(error)    => failure(s"decode failed: $error")
 
   pureTest("query.toCursor without IdField returns Forward + Incremental(First)"):
@@ -28,10 +28,7 @@ object DecodedCursorSuite extends SimpleIOSuite:
 
     Cursor.decode(cursor, query) match
       case Right(decoded) =>
-        expect.same(
-          decoded,
-          DecodedCursor(Direction.Forward, Position.Offset.First)
-        )
+        expect.same(DecodedCursor(Direction.Forward, Position.Offset.First), decoded)
       case Left(error) => failure(s"decode failed: $error")
 
   pureTest("toCursor / toDecodedCursor roundtrip via extension methods"):
@@ -40,4 +37,4 @@ object DecodedCursorSuite extends SimpleIOSuite:
     val cursor = decoded.encode(query)
     val roundtrip = cursor.decode(query)
 
-    expect.same(roundtrip, Right(decoded))
+    expect.same(Right(decoded), roundtrip)

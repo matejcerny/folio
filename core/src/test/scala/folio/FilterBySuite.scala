@@ -6,8 +6,8 @@ object FilterBySuite extends SimpleIOSuite:
 
   pureTest("ExactMatch stores field correctly"):
     val filter = FilterBy.ExactMatch(TestField.Name, "alice")
-    expect.same(filter.field, TestField.Name)
+    expect.same(TestField.Name, filter.field)
 
   pureTest("ExactMatch stores value correctly"):
     val filter = FilterBy.ExactMatch(TestField.Name, "alice")
-    expect.same(filter.value, "alice")
+    expect.same("alice", filter.value)

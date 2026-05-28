@@ -40,7 +40,15 @@ private[folio] object CursorBytes:
   def intBytes(value: Int): Chain[Byte] = unsignedVarint(zigzagEncode(value.toLong))
 
   def readInt(stage: String): Read[Int] =
-    readUnsignedVarint(stage).map(encoded => zigzagDecode(encoded).toInt)
+    readUnsignedVarint(stage).flatMap: encoded =>
+      val decoded = zigzagDecode(encoded)
+      Either
+        .cond(
+          decoded >= Int.MinValue.toLong && decoded <= Int.MaxValue.toLong,
+          decoded.toInt,
+          CursorDecodingError.IntOutOfRange(stage, decoded)
+        )
+        .liftRead
 
   def longBytes(value: Long): Chain[Byte] = unsignedVarint(zigzagEncode(value))
 
@@ -53,9 +61,17 @@ private[folio] object CursorBytes:
 
   def readString(stage: String): Read[String] =
     for
-      length <- readUnsignedVarint(s"$stage length")
-      bytes <- readBytes(length.toInt, s"$stage bytes")
+      lengthLong <- readUnsignedVarint(s"$stage length")
+      length <- narrowStringLength(lengthLong, stage).liftRead
+      bytes <- readBytes(length, s"$stage bytes")
     yield String(bytes, StandardCharsets.UTF_8)
+
+  private def narrowStringLength(length: Long, stage: String): Either[CursorDecodingError, Int] =
+    Either.cond(
+      length >= 0L && length <= Int.MaxValue.toLong,
+      length.toInt,
+      CursorDecodingError.MalformedStringLength(stage, length)
+    )
 
   def timestampBytes(value: OffsetDateTime): Chain[Byte] =
     longBytes(value.toEpochSecond) ++
@@ -65,10 +81,30 @@ private[folio] object CursorBytes:
   def readTimestamp(stage: String): Read[OffsetDateTime] =
     for
       epochSecond <- readLong(s"$stage epoch-second")
-      nano <- readUnsignedVarint(s"$stage nano")
-      offsetSeconds <- readLong(s"$stage offset-seconds")
-      value <- buildTimestamp(epochSecond, nano.toInt, offsetSeconds.toInt).liftRead
+      nano <- readNano(s"$stage nano")
+      offsetSeconds <- readOffsetSeconds(s"$stage offset-seconds")
+      value <- buildTimestamp(epochSecond, nano, offsetSeconds).liftRead
     yield value
+
+  private def readNano(stage: String): Read[Int] =
+    readUnsignedVarint(stage).flatMap: nano =>
+      Either
+        .cond(
+          nano >= 0L && nano <= 999_999_999L,
+          nano.toInt,
+          CursorDecodingError.MalformedTimestampField(stage, nano)
+        )
+        .liftRead
+
+  private def readOffsetSeconds(stage: String): Read[Int] =
+    readLong(stage).flatMap: offset =>
+      Either
+        .cond(
+          offset >= -18L * 3600 && offset <= 18L * 3600,
+          offset.toInt,
+          CursorDecodingError.MalformedTimestampField(stage, offset)
+        )
+        .liftRead
 
   private def buildTimestamp(
       epochSecond: Long,
@@ -92,7 +128,7 @@ private[folio] object CursorBytes:
   def readBytes(count: Int, stage: String): Read[Array[Byte]] =
     StateT: state =>
       Either.cond(
-        count >= 0 && state.index + count <= state.bytes.length,
+        count >= 0 && count <= state.bytes.length - state.index,
         (state.copy(index = state.index + count), state.bytes.slice(state.index, state.index + count)),
         CursorDecodingError.Truncated(stage)
       )

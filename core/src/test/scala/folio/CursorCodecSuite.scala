@@ -15,7 +15,7 @@ object CursorCodecSuite extends SimpleIOSuite:
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 
-    expect.same(roundtrip, Right(decoded))
+    expect.same(Right(decoded), roundtrip)
 
   pureTest("roundtrip encode/decode for query with special characters in filter"):
     val query = Query
@@ -25,7 +25,7 @@ object CursorCodecSuite extends SimpleIOSuite:
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 
-    expect.same(roundtrip, Right(decoded))
+    expect.same(Right(decoded), roundtrip)
 
   pureTest("encoded cursor contains only base64url characters without padding"):
     val cursor = Cursor.encode(
@@ -51,7 +51,7 @@ object CursorCodecSuite extends SimpleIOSuite:
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 
-    expect.same(roundtrip, Right(decoded))
+    expect.same(Right(decoded), roundtrip)
 
   pureTest("encode produces a compact frame for typical single-Long keyset"):
     val cursor = Cursor.encode(
@@ -61,4 +61,4 @@ object CursorCodecSuite extends SimpleIOSuite:
     val raw = java.util.Base64.getUrlDecoder.decode(cursor.value)
 
     // flags(1) + hash(4) + count-varint(1) + tag(1) + Long-zigzag-varint(1 for value=2) = 8 bytes
-    expect.same(raw.length, 8)
+    expect.same(8, raw.length)
