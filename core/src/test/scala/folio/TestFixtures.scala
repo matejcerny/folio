@@ -1,7 +1,5 @@
 package folio
 
-import folio.FolioError.*
-
 import scala.collection.immutable.ListSet
 
 enum TestField derives FieldSchema.SnakeCase:
@@ -9,10 +7,6 @@ enum TestField derives FieldSchema.SnakeCase:
 
 enum TestFieldNoId derives FieldSchema.SnakeCase:
   case Timestamp, Source
-
-given CursorCodec with
-  def encode(raw: String): String = raw
-  def decode(cursor: Cursor): Either[CursorDecodingError, String] = Right(cursor.value)
 
 case class Row(id: Long, name: String, createdAt: String)
 

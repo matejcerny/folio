@@ -28,11 +28,12 @@ final class InMemoryTable[FIELD: FieldSchema, T](rows: Vector[T], extract: (FIEL
 
   private inline def applyPosition(sorted: Vector[T], position: Position): Vector[T] =
     position match
-      case Position.Offset(offset)       => sorted.drop(offset.toInt)
-      case Position.Keyset(None)         => sorted
-      case Position.Keyset(Some(lastId)) =>
+      case Position.Offset(offset)         => sorted.drop(offset.toInt)
+      case Position.Keyset(Nil)            => sorted
+      case Position.Keyset(encodedId :: _) =>
         summonFrom:
           case keysetField: KeysetField[FIELD, T] =>
-            val anchor = sorted.indexWhere(row => keysetField.rowId(row) == lastId)
+            val anchor = sorted.indexWhere: row =>
+              keysetField.codec.toKeysetValue(keysetField.rowId(row)) == encodedId
             if anchor < 0 then sorted else sorted.drop(anchor + 1)
           case _ => sorted

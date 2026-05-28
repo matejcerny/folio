@@ -1,18 +1,16 @@
 package folio
 
+import folio.KeysetSyntax.keysetOf
 import weaver.SimpleIOSuite
 
 object CursorCodecSuite extends SimpleIOSuite:
 
-  // Use the real base64 codec, not the no-op test codec
-  private val realCodec: CursorCodec = CursorCodec.given_CursorCodec
+  private given KeysetField[TestField, Row] = KeysetField(TestField.Id, _.id)
 
-  // To test the real codec roundtrip, we go through Cursor.encode/decode
-  // with the real codec as a local given, exercising actual base64 encoding.
+  private val realCodec: CursorCodec = summon[CursorCodec]
 
   pureTest("roundtrip encode/decode for simple query via real base64 codec"):
-    given CursorCodec = realCodec
-    val decoded = DecodedCursor(Direction.Forward, Position.Keyset(None))
+    val decoded = DecodedCursor(Direction.Forward, Position.Keyset(Nil))
     val query = Query.empty[TestField]
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
@@ -20,7 +18,6 @@ object CursorCodecSuite extends SimpleIOSuite:
     expect.same(roundtrip, Right(decoded))
 
   pureTest("roundtrip encode/decode for query with special characters in filter"):
-    given CursorCodec = realCodec
     val query = Query
       .empty[TestField]
       .copy(filters = Set(FilterBy.ExactMatch(TestField.Name, "hello+world/foo=bar")))
@@ -31,9 +28,8 @@ object CursorCodecSuite extends SimpleIOSuite:
     expect.same(roundtrip, Right(decoded))
 
   pureTest("encoded cursor contains only base64url characters without padding"):
-    given CursorCodec = realCodec
     val cursor = Cursor.encode(
-      DecodedCursor(Direction.Forward, Position.Keyset(Some(99L))),
+      DecodedCursor(Direction.Forward, keysetOf(99L)),
       Query.empty[TestField]
     )
     val base64UrlPattern = "^[A-Za-z0-9_-]+$".r
@@ -42,23 +38,27 @@ object CursorCodecSuite extends SimpleIOSuite:
       expect(!clue(cursor.value).contains("="))
 
   pureTest("real codec decode returns InvalidBase64 for invalid input"):
-    // Encode with the no-op codec (package-level given) to create a Cursor
-    // containing raw text, which is not valid base64
-    val decoded = DecodedCursor(Direction.Forward, Position.Keyset(None))
-    val query = Query.empty[TestField]
-    val noopCursor = Cursor.encode(decoded, query) // raw text via no-op codec
+    val invalidCursor = Cursor("not valid base64 because of spaces")
 
-    // Now decode that raw-text cursor with the real base64 codec
-    val result = realCodec.decode(noopCursor)
+    val result = realCodec.decode(invalidCursor)
 
     expect(clue(result).isLeft) and
       expect(clue(result).left.exists(_.isInstanceOf[FolioError.CursorDecodingError.InvalidBase64]))
 
-  pureTest("roundtrip preserves cursor position with LastId"):
-    given CursorCodec = realCodec
-    val decoded = DecodedCursor(Direction.Backward, Position.Keyset(Some(Long.MaxValue)))
+  pureTest("roundtrip preserves cursor position with Long.MaxValue"):
+    val decoded = DecodedCursor(Direction.Backward, keysetOf(Long.MaxValue))
     val query = TestFixtures.fullyPopulatedQuery
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 
     expect.same(roundtrip, Right(decoded))
+
+  pureTest("encode produces a compact frame for typical single-Long keyset"):
+    val cursor = Cursor.encode(
+      DecodedCursor(Direction.Forward, keysetOf(2L)),
+      Query.empty[TestField]
+    )
+    val raw = java.util.Base64.getUrlDecoder.decode(cursor.value)
+
+    // flags(1) + hash(4) + count-varint(1) + tag(1) + Long-zigzag-varint(1 for value=2) = 8 bytes
+    expect.same(raw.length, 8)

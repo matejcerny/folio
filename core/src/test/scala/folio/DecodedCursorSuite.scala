@@ -36,7 +36,7 @@ object DecodedCursorSuite extends SimpleIOSuite:
 
   pureTest("toCursor / toDecodedCursor roundtrip via extension methods"):
     val query = TestFixtures.emptyQueryWithId
-    val decoded = DecodedCursor(Direction.Backward, Position.Keyset(Some(7L)))
+    val decoded = DecodedCursor(Direction.Backward, Position.Keyset(List(KeysetValue.LongV(7L))))
     val cursor = decoded.encode(query)
     val roundtrip = cursor.decode(query)
 

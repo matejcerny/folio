@@ -5,10 +5,14 @@ import scala.compiletime.summonFrom
 sealed trait Position(val asString: String)
 
 object Position:
-  /** Keyset pagination: tracks the id of the last seen row. */
-  case class Keyset(lastId: Option[Long]) extends Position("keyset")
+  /** Keyset pagination: tracks the keyset anchor as a list of typed values.
+    *
+    * At present the list has size 0 (first page) or 1 (id only); the list shape is forward-compatible with multi-column
+    * keyset that has not landed yet.
+    */
+  case class Keyset(values: List[KeysetValue]) extends Position("keyset")
   object Keyset:
-    val First = Keyset(lastId = None)
+    val First: Keyset = Keyset(Nil)
 
   /** Offset-based pagination: tracks an absolute non-negative row offset. */
   case class Offset private[folio] (offset: Long) extends Position("offset"):
