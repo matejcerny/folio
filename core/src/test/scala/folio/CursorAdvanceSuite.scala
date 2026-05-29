@@ -28,9 +28,9 @@ object CursorAdvanceSuite extends SimpleIOSuite:
   // defensively handles a forged Keyset position.
 
   pureTest("keysetAware.next falls back to id when sort field has no registered extractor"):
-    val keysetField = KeysetField(TestField.Id, (row: Row) => row.id)
+    val keysetField = KeysetField.uniqueBy(TestField.Id, (row: Row) => row.id)
     val advance = CursorAdvance.keysetAware[TestField, Row](keysetField)
-    val row = Row(99L, "alice", "2024-01-01", "2024-01-01")
+    val row = Row(99L, "alice", "2024-01-01", "2024-01-01", None)
     val sortBys = ListSet(TestField.Name.ascending)
 
     expect.same(
@@ -39,12 +39,53 @@ object CursorAdvanceSuite extends SimpleIOSuite:
     )
 
   pureTest("keysetAware.previous falls back to id when sort field has no registered extractor"):
-    val keysetField = KeysetField(TestField.Id, (row: Row) => row.id)
+    val keysetField = KeysetField.uniqueBy(TestField.Id, (row: Row) => row.id)
     val advance = CursorAdvance.keysetAware[TestField, Row](keysetField)
-    val row = Row(7L, "bob", "2024-01-02", "2024-01-02")
+    val row = Row(7L, "bob", "2024-01-02", "2024-01-02", None)
     val sortBys = ListSet(TestField.Name.ascending)
 
     expect.same(
       Position.Keyset(List(KeysetValue.LongV(7L), KeysetValue.LongV(7L))),
       advance.previous(Position.Keyset(Nil), sortBys, Seq(row), limit)
+    )
+
+  // --- absentable-field extractor produces KeysetValue.Absent on None ---
+
+  pureTest("keysetAware.next emits Absent when the boundary row's absentable field is None"):
+    val keysetField = KeysetField
+      .uniqueBy(TestField.Id, (row: Row) => row.id)
+      .withField(TestField.LastSeen, (row: Row) => row.lastSeen)
+    val advance = CursorAdvance.keysetAware[TestField, Row](keysetField)
+    val row = Row(8L, "alice", "2024-01-09", "2024-01-09", None)
+    val sortBys = ListSet(TestField.LastSeen.ascending)
+
+    expect.same(
+      Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(8L))),
+      advance.next(Position.Keyset(Nil), sortBys, Seq(row), limit)
+    )
+
+  pureTest("keysetAware.previous emits Absent when the boundary row's absentable field is None"):
+    val keysetField = KeysetField
+      .uniqueBy(TestField.Id, (row: Row) => row.id)
+      .withField(TestField.LastSeen, (row: Row) => row.lastSeen)
+    val advance = CursorAdvance.keysetAware[TestField, Row](keysetField)
+    val row = Row(5L, "alice", "2024-01-06", "2024-01-06", None)
+    val sortBys = ListSet(TestField.LastSeen.ascending)
+
+    expect.same(
+      Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5L))),
+      advance.previous(Position.Keyset(Nil), sortBys, Seq(row), limit)
+    )
+
+  pureTest("keysetAware.next emits the inner codec value when the absentable field has Some"):
+    val keysetField = KeysetField
+      .uniqueBy(TestField.Id, (row: Row) => row.id)
+      .withField(TestField.LastSeen, (row: Row) => row.lastSeen)
+    val advance = CursorAdvance.keysetAware[TestField, Row](keysetField)
+    val row = Row(2L, "alice", "2024-01-01", "2024-01-01", Some("2024-02-03"))
+    val sortBys = ListSet(TestField.LastSeen.ascending)
+
+    expect.same(
+      Position.Keyset(List(KeysetValue.StringV("2024-02-03"), KeysetValue.LongV(2L))),
+      advance.next(Position.Keyset(Nil), sortBys, Seq(row), limit)
     )

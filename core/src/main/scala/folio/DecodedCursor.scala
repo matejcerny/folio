@@ -11,5 +11,5 @@ extension [FIELD: FieldSchema](query: Query[FIELD])
     Cursor.encode(DecodedCursor(direction, Position.fromQuery(query)), query)
 
 extension (decoded: DecodedCursor)
-  def encode[FIELD: FieldSchema](query: Query[FIELD])(using CursorCodec): Cursor =
+  inline def encode[FIELD: FieldSchema](query: Query[FIELD])(using CursorCodec): Cursor =
     Cursor.encode(decoded, query)

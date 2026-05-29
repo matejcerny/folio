@@ -1,35 +1,44 @@
 package folio
 
-import scala.annotation.implicitNotFound
+import scala.annotation.{ implicitNotFound, targetName }
 
-/** Enables keyset pagination by both designating the id field within `FIELD` and extracting the id from a row of type
-  * `T`. Provide one alongside your [[FieldSchema]] to opt into keyset; omit it to fall back to offset-only pagination.
+/** Enables keyset pagination by both designating the unique field within `FIELD` and extracting its value from a row of
+  * type `T`. Provide one alongside your [[FieldSchema]] to opt into keyset; omit it to fall back to offset-only
+  * pagination.
   *
-  * The id type is captured as a type member [[ID]] and inferred from the row extractor at construction. A
-  * [[CursorValueCodec]] for [[ID]] is required so the cursor can serialize the keyset anchor.
+  * The unique-field's value type is captured as a type member [[ID]] and inferred from the row extractor at
+  * construction. A [[CursorValueCodec]] for [[ID]] is required so the cursor can serialize the keyset anchor.
   *
-  * Use [[withField]] to register additional non-id sort fields for keyset pagination. Each registered field has a typed
-  * extractor and a [[CursorValueCodec]] so its row value can be encoded into the cursor anchor.
+  * Use [[withField]] to register additional non-unique sort fields for keyset pagination. Each registered field has a
+  * typed extractor and a [[CursorValueCodec]] so its row value can be encoded into the cursor anchor. The
+  * `T => Option[V]` overload marks the field as absentable: a missing row value encodes as [[KeysetValue.Absent]] and
+  * the decoder accepts the same in that slot.
   */
 @implicitNotFound(
-  "Keyset pagination needs a `given KeysetField[${FIELD}, ${T}]`. Use `KeysetField(idField, _.id)` to provide one, or omit it for offset-only pagination."
+  "Keyset pagination needs a `given KeysetField[${FIELD}, ${T}]`. Use `KeysetField.uniqueBy(idField, _.id)` to provide one, or omit it for offset-only pagination."
 )
 trait KeysetField[FIELD, T]:
   type ID
   def field: FIELD
   def rowId(row: T): ID
+  def absentableFields: Set[FIELD]
+
+  @targetName("withRequiredField")
+  def withField[V](field: FIELD, extract: T => V)(using CursorValueCodec[V]): KeysetField.Aux[FIELD, T, ID]
+
+  @targetName("withAbsentableField")
+  def withField[V](field: FIELD, extract: T => Option[V])(using CursorValueCodec[V]): KeysetField.Aux[FIELD, T, ID]
+
   private[folio] def codec: CursorValueCodec[ID]
   private[folio] def fields: Map[FIELD, FieldExtractor[T]]
-  def withField[V](field: FIELD, extract: T => V)(using CursorValueCodec[V]): KeysetField.Aux[FIELD, T, ID]
 
 object KeysetField:
   type Aux[FIELD, T, ID0] = KeysetField[FIELD, T] { type ID = ID0 }
 
-  def apply[FIELD, T, ID0](idField: FIELD, extract: T => ID0)(using
+  def uniqueBy[FIELD, T, ID0](idField: FIELD, extract: T => ID0)(using
       idCodec: CursorValueCodec[ID0]
   ): Aux[FIELD, T, ID0] =
-    val idExtractor = FieldExtractor.of(extract)(using idCodec)
-    make(idField, extract, idCodec, Map(idField -> idExtractor))
+    make(idField, extract, idCodec, Map(idField -> FieldExtractor.required(extract)(using idCodec)))
 
   private def make[FIELD, T, ID0](
       idField: FIELD,
@@ -41,22 +50,37 @@ object KeysetField:
       type ID = ID0
       def field: FIELD = idField
       def rowId(row: T): ID = extractId(row)
-      private[folio] def codec: CursorValueCodec[ID] = idCodec
-      private[folio] def fields: Map[FIELD, FieldExtractor[T]] = registeredFields
-      def withField[V](field: FIELD, extract: T => V)(using
+      def absentableFields: Set[FIELD] =
+        registeredFields
+          .collect:
+            case (registeredField, extractor) if extractor.isAbsentable => registeredField
+          .toSet
+
+      @targetName("withRequiredField")
+      def withField[V](field: FIELD, extract: T => V)(using fieldCodec: CursorValueCodec[V]): Aux[FIELD, T, ID] =
+        make(idField, extractId, idCodec, registeredFields.updated(field, FieldExtractor.required(extract)))
+
+      @targetName("withAbsentableField")
+      def withField[V](field: FIELD, extract: T => Option[V])(using
           fieldCodec: CursorValueCodec[V]
       ): Aux[FIELD, T, ID] =
-        make(idField, extractId, idCodec, registeredFields.updated(field, FieldExtractor.of(extract)))
+        make(idField, extractId, idCodec, registeredFields.updated(field, FieldExtractor.absentable(extract)))
+
+      private[folio] def codec: CursorValueCodec[ID] = idCodec
+      private[folio] def fields: Map[FIELD, FieldExtractor[T]] = registeredFields
 
 private[folio] trait FieldExtractor[T]:
-  type V
-  def extract(row: T): V
-  def codec: CursorValueCodec[V]
-  final def encodedFromRow(row: T): KeysetValue = codec.toKeysetValue(extract(row))
+  def encodedFromRow(row: T): KeysetValue
+  def isAbsentable: Boolean
 
 private[folio] object FieldExtractor:
-  def of[T, V0](extractFn: T => V0)(using codecForValue: CursorValueCodec[V0]): FieldExtractor[T] =
+  def required[T, V](extractFn: T => V)(using codecForValue: CursorValueCodec[V]): FieldExtractor[T] =
     new FieldExtractor[T]:
-      type V = V0
-      def extract(row: T): V = extractFn(row)
-      def codec: CursorValueCodec[V] = codecForValue
+      def encodedFromRow(row: T): KeysetValue = codecForValue.toKeysetValue(extractFn(row))
+      def isAbsentable: Boolean = false
+
+  def absentable[T, V](extractFn: T => Option[V])(using codecForValue: CursorValueCodec[V]): FieldExtractor[T] =
+    new FieldExtractor[T]:
+      def encodedFromRow(row: T): KeysetValue =
+        extractFn(row).map(codecForValue.toKeysetValue).getOrElse(KeysetValue.Absent)
+      def isAbsentable: Boolean = true

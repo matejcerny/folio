@@ -2,10 +2,11 @@ package folio
 
 import folio.KeysetSyntax.keysetOf
 import weaver.SimpleIOSuite
+import TestFixtures.*
 
 object CursorCodecSuite extends SimpleIOSuite:
 
-  private given KeysetField[TestField, Row] = KeysetField(TestField.Id, _.id)
+  private given KeysetField[TestField, Row] = KeysetField.uniqueBy(TestField.Id, _.id)
 
   private val realCodec: CursorCodec = summon[CursorCodec]
 
@@ -15,7 +16,7 @@ object CursorCodecSuite extends SimpleIOSuite:
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 
-    expect.same(Right(decoded), roundtrip)
+    expect.sameR(decoded, roundtrip)
 
   pureTest("roundtrip encode/decode for query with special characters in filter"):
     val query = Query
@@ -25,7 +26,7 @@ object CursorCodecSuite extends SimpleIOSuite:
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 
-    expect.same(Right(decoded), roundtrip)
+    expect.sameR(decoded, roundtrip)
 
   pureTest("encoded cursor contains only base64url characters without padding"):
     val cursor = Cursor.encode(
@@ -51,7 +52,7 @@ object CursorCodecSuite extends SimpleIOSuite:
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 
-    expect.same(Right(decoded), roundtrip)
+    expect.sameR(decoded, roundtrip)
 
   pureTest("encode produces a compact frame for typical single-Long keyset"):
     val cursor = Cursor.encode(

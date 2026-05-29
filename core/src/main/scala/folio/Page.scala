@@ -33,53 +33,63 @@ object Page:
       query: Query[FIELD],
       fetchRows: ResolvedQuery[FIELD] => F[Seq[T]]
   )(using CursorCodec): F[Either[CursorDecodingError, Page[T]]] =
-    val (advance, defaultSortBys): (CursorAdvance[FIELD, T], ListSet[SortBy[FIELD]]) = summonFrom:
+    // Resolve KeysetField[FIELD, T] exactly once and derive every keyset-dependent input from it.
+    // Re-summoning KeysetField[FIELD, ?] further down would be ambiguous if multiple row models share the same FIELD.
+    summonFrom:
       case keysetField: KeysetField[FIELD, T] =>
-        (CursorAdvance.keysetAware[FIELD, T](keysetField), ListSet(keysetField.field.ascending))
+        paginate(
+          query,
+          fetchRows,
+          CursorAdvance.keysetAware[FIELD, T](keysetField),
+          Position.fromQueryKeyset(query, keysetField),
+          ListSet(keysetField.field.ascending),
+          Cursor.fingerprintFor(query, keysetField.absentableFields.map(_.name)),
+          Cursor.keysetMetadataFor(keysetField)
+        )
       case _ =>
-        (CursorAdvance.offsetOnly[FIELD, T], ListSet.empty[SortBy[FIELD]])
-
-    // Resolve the fallback "first position" here so summonFrom inside Position.fromQuery
-    // sees the concrete FIELD's KeysetField at the inline call site.
-    val firstPosition = Position.fromQuery(query)
-
-    paginate(query, fetchRows, advance, firstPosition, defaultSortBys)
+        paginate(
+          query,
+          fetchRows,
+          CursorAdvance.offsetOnly[FIELD, T],
+          Position.Offset.First,
+          ListSet.empty[SortBy[FIELD]],
+          Cursor.fingerprintFor(query, Set.empty),
+          Cursor.KeysetMetadata.empty
+        )
 
   private def paginate[F[_]: Applicative, T, FIELD: FieldSchema](
       query: Query[FIELD],
       fetchRows: ResolvedQuery[FIELD] => F[Seq[T]],
       advance: CursorAdvance[FIELD, T],
       firstPosition: Position,
-      defaultSortBys: ListSet[SortBy[FIELD]]
+      defaultSortBys: ListSet[SortBy[FIELD]],
+      fingerprint: Int,
+      keysetMetadata: Cursor.KeysetMetadata
   )(using CursorCodec): F[Either[CursorDecodingError, Page[T]]] =
-    val currentDecodedCursor: Either[CursorDecodingError, DecodedCursor] = query.cursor match
-      case Some(cursor) =>
-        Cursor
-          .decode(cursor, query)
-          .flatMap: decoded =>
-            (firstPosition, decoded.position) match
-              case (_: Position.Keyset, _: Position.Keyset) => Right(decoded)
-              case (_: Position.Offset, _: Position.Offset) => Right(decoded)
-              case _                                        =>
-                Left(
-                  CursorDecodingError.StrategyMismatch(
-                    expected = firstPosition,
-                    actual = decoded.position
-                  )
-                )
-      case None => Right(DecodedCursor(Direction.Forward, firstPosition))
+    val currentDecodedCursor =
+      query.cursor
+        .map:
+          Cursor
+            .decodeWithFingerprint(_, query, fingerprint, keysetMetadata)
+            .flatMap: decoded =>
+              (firstPosition, decoded.position) match
+                case (_: Position.Keyset, _: Position.Keyset) => Right(decoded)
+                case (_: Position.Offset, _: Position.Offset) => Right(decoded)
+                case _                                        =>
+                  Left(CursorDecodingError.StrategyMismatch(expected = firstPosition, actual = decoded.position))
+        .getOrElse(Right(DecodedCursor(Direction.Forward, firstPosition)))
 
     currentDecodedCursor.traverse: current =>
       val limit = query.limit
       val isBackward = current.direction == Direction.Backward
       val baseSortBys = if query.sortBys.nonEmpty then query.sortBys else defaultSortBys
 
-      val (sortBys, fetchPosition, reverseDisplay) = current match
-        case DecodedCursor(Direction.Backward, keyset: Position.Keyset) => (baseSortBys.flipOrder, keyset, true)
-        case DecodedCursor(Direction.Backward, offset: Position.Offset) => (baseSortBys, offset, false)
-        case DecodedCursor(Direction.Forward, position)                 => (baseSortBys, position, false)
+      val (fetchPosition, reverseDisplay) = current match
+        case DecodedCursor(Direction.Backward, keyset: Position.Keyset) => (keyset, true)
+        case DecodedCursor(Direction.Backward, offset: Position.Offset) => (offset, false)
+        case DecodedCursor(Direction.Forward, position)                 => (position, false)
 
-      fetchRows(ResolvedQuery(query.filters, sortBys, limit.fetchLimit, fetchPosition))
+      fetchRows(ResolvedQuery(query.filters, baseSortBys, limit.fetchLimit, fetchPosition, current.direction))
         .map: rowsPlusOne =>
           val hasMore = limit.hasMore(rowsPlusOne)
           val rows = rowsPlusOne.take(limit.value)
@@ -88,8 +98,14 @@ object Page:
           if ordered.isEmpty then Page.empty(limit)
           else
             val nextCursor = Option.when(isBackward || hasMore):
-              DecodedCursor(Direction.Forward, advance.next(fetchPosition, sortBys, ordered, limit)).encode(query)
+              Cursor.encodeWithFingerprint(
+                DecodedCursor(Direction.Forward, advance.next(fetchPosition, baseSortBys, ordered, limit)),
+                fingerprint
+              )
             val previousCursor = Option.when((isBackward && hasMore) || (!isBackward && !current.isFirst)):
-              DecodedCursor(Direction.Backward, advance.previous(fetchPosition, sortBys, ordered, limit)).encode(query)
+              Cursor.encodeWithFingerprint(
+                DecodedCursor(Direction.Backward, advance.previous(fetchPosition, baseSortBys, ordered, limit)),
+                fingerprint
+              )
 
             Page(limit, previousCursor, nextCursor, ordered)

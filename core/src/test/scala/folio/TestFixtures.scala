@@ -3,19 +3,27 @@ package folio
 import scala.collection.immutable.ListSet
 
 enum TestField derives FieldSchema.SnakeCase:
-  case Id, Name, CreatedAt, Description
+  case Id, Name, CreatedAt, Description, LastSeen
 
 enum TestFieldNoId derives FieldSchema.SnakeCase:
   case Timestamp, Source
 
-case class Row(id: Long, name: String, createdAt: String, description: String)
+case class Row(id: Long, name: String, createdAt: String, description: String, lastSeen: Option[String])
 
 case class EventRow(timestamp: String, source: String)
 
 given KeysetField[TestField, Row] =
-  KeysetField(TestField.Id, (row: Row) => row.id)
+  KeysetField
+    .uniqueBy(TestField.Id, (row: Row) => row.id)
     .withField(TestField.Name, _.name)
     .withField(TestField.CreatedAt, _.createdAt)
+    .withField(TestField.LastSeen, _.lastSeen)
+
+extension (e: weaver.Expect)
+  def sameR[A](expected: A, actual: Either[?, A]): weaver.Expectations =
+    e.same(Right(expected), actual)
+  def sameL[E](expected: E, actual: Either[E, ?]): weaver.Expectations =
+    e.same(Left(expected), actual)
 
 object TestFixtures:
 
@@ -34,31 +42,33 @@ object TestFixtures:
       sortBys = ListSet(TestField.CreatedAt.descending, TestField.Id.ascending)
     )
 
-  val rowExtract: (TestField, Row) => String = (field, row) =>
+  val rowExtract: (TestField, Row) => Option[String] = (field, row) =>
     field match
-      case TestField.Id          => f"${row.id}%020d"
-      case TestField.Name        => row.name
-      case TestField.CreatedAt   => row.createdAt
-      case TestField.Description => row.description
+      case TestField.Id          => Some(f"${row.id}%020d")
+      case TestField.Name        => Some(row.name)
+      case TestField.CreatedAt   => Some(row.createdAt)
+      case TestField.Description => Some(row.description)
+      case TestField.LastSeen    => row.lastSeen
 
-  val eventExtract: (TestFieldNoId, EventRow) => String = (field, row) =>
+  val eventExtract: (TestFieldNoId, EventRow) => Option[String] = (field, row) =>
     field match
-      case TestFieldNoId.Timestamp => row.timestamp
-      case TestFieldNoId.Source    => row.source
+      case TestFieldNoId.Timestamp => Some(row.timestamp)
+      case TestFieldNoId.Source    => Some(row.source)
 
   // description == createdAt so sort-by-Description orders rows the same as sort-by-CreatedAt;
   // existing realistic-data assertions stay green when offset queries switch to the unregistered Description field.
+  // lastSeen is None for ids 5..9 so paginating by LastSeen exercises the Absent boundary.
   val rows: Vector[Row] = Vector(
-    Row(0, "alice", "2024-01-05", "2024-01-05"),
-    Row(1, "bob", "2024-01-03", "2024-01-03"),
-    Row(2, "alice", "2024-01-01", "2024-01-01"),
-    Row(3, "charlie", "2024-01-08", "2024-01-08"),
-    Row(4, "bob", "2024-01-02", "2024-01-02"),
-    Row(5, "alice", "2024-01-06", "2024-01-06"),
-    Row(6, "charlie", "2024-01-04", "2024-01-04"),
-    Row(7, "bob", "2024-01-07", "2024-01-07"),
-    Row(8, "alice", "2024-01-09", "2024-01-09"),
-    Row(9, "charlie", "2024-01-10", "2024-01-10")
+    Row(0, "alice", "2024-01-05", "2024-01-05", Some("2024-02-01")),
+    Row(1, "bob", "2024-01-03", "2024-01-03", Some("2024-02-02")),
+    Row(2, "alice", "2024-01-01", "2024-01-01", Some("2024-02-03")),
+    Row(3, "charlie", "2024-01-08", "2024-01-08", Some("2024-02-04")),
+    Row(4, "bob", "2024-01-02", "2024-01-02", Some("2024-02-05")),
+    Row(5, "alice", "2024-01-06", "2024-01-06", None),
+    Row(6, "charlie", "2024-01-04", "2024-01-04", None),
+    Row(7, "bob", "2024-01-07", "2024-01-07", None),
+    Row(8, "alice", "2024-01-09", "2024-01-09", None),
+    Row(9, "charlie", "2024-01-10", "2024-01-10", None)
   )
 
   val events: Vector[EventRow] = Vector(

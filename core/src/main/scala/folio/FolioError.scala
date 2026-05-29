@@ -36,3 +36,5 @@ object FolioError:
         extends CursorDecodingError(
           s"Cursor strategy mismatch: query expects ${expected.asString}, cursor carries ${actual.asString}"
         )
+    case class AbsentInRequiredField(field: String)
+        extends CursorDecodingError(s"cursor anchor has an Absent value in non-absentable field '$field'")

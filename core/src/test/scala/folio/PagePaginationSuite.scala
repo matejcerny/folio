@@ -6,6 +6,7 @@ import cats.Id
 import cats.data.Writer
 import cats.syntax.foldable.*
 import folio.FolioError.CursorDecodingError
+import TestFixtures.*
 import folio.KeysetSyntax.keysetOf
 import weaver.SimpleIOSuite
 
@@ -24,15 +25,15 @@ object PagePaginationSuite extends SimpleIOSuite:
   private val eventTable: InMemoryTable[TestFieldNoId, EventRow] =
     InMemoryTable(TestFixtures.events, TestFixtures.eventExtract)
 
-  private def syntheticRow(id: Long): Row = Row(id, name = "", createdAt = "", description = "")
+  private def syntheticRow(id: Long): Row = Row(id, name = "", createdAt = "", description = "", lastSeen = None)
   private def syntheticRows(ids: Long*): Seq[Row] = ids.map(syntheticRow)
 
-  private def decodedOf[FIELD: FieldSchema](cursor: Cursor, query: Query[FIELD]): DecodedCursor =
+  private inline def decodedOf[FIELD: FieldSchema](cursor: Cursor, query: Query[FIELD]): DecodedCursor =
     Cursor.decode(cursor, query) match
       case Right(decoded) => decoded
       case Left(error)    => sys.error(s"decode failed: $error")
 
-  private def queryWithCurrent[FIELD: FieldSchema](base: Query[FIELD], current: DecodedCursor): Query[FIELD] =
+  private inline def queryWithCurrent[FIELD: FieldSchema](base: Query[FIELD], current: DecodedCursor): Query[FIELD] =
     base.copy(cursor = Some(Cursor.encode(current, base)))
 
   private inline def pageOrFail[FIELD: FieldSchema](rowsPlusOne: Seq[Row], query: Query[FIELD]): Page[Row] =
@@ -324,7 +325,8 @@ object PagePaginationSuite extends SimpleIOSuite:
     val next = page.nextCursor.map(decodedOf(_, query))
     val previous = page.previousCursor.map(decodedOf(_, query))
     List(
-      expect.same(List(ListSet(TestField.Id.descending)), captured.map(_.sortBys)),
+      expect.same(List(ListSet(TestField.Id.ascending)), captured.map(_.sortBys)),
+      expect.same(List(Direction.Backward), captured.map(_.direction)),
       expect.same(Seq(5L, 6L), page.data.map(_.id)),
       expect.same(Some(DecodedCursor(Direction.Forward, keysetOf(6L))), next),
       expect.same(Some(DecodedCursor(Direction.Backward, keysetOf(5L))), previous)
@@ -458,11 +460,14 @@ object PagePaginationSuite extends SimpleIOSuite:
       expect.same(List(Position.Keyset(Nil)), captured.map(_.position))
     ).combineAll
 
-  pureTest("no-sort keyset: backward fetch flips the default to descending id sort"):
+  pureTest("no-sort keyset: backward fetch keeps the canonical ascending id sort and signals Backward direction"):
     val current = DecodedCursor(Direction.Backward, keysetOf(7L))
     val query = queryWithCurrent(TestFixtures.emptyQueryWithId.copy(limit = limit), current)
     val (captured, _) = pageCapturing(rowTable.fetch, query)
-    expect.same(List(ListSet(TestField.Id.descending)), captured.map(_.sortBys))
+    List(
+      expect.same(List(ListSet(TestField.Id.ascending)), captured.map(_.sortBys)),
+      expect.same(List(Direction.Backward), captured.map(_.direction))
+    ).combineAll
 
   pureTest("no-sort offset-only: empty sortBys still passed through (no IdField in scope)"):
     val query = TestFixtures.emptyQueryNoId.copy(limit = limit)
@@ -479,25 +484,25 @@ object PagePaginationSuite extends SimpleIOSuite:
     val current = DecodedCursor(Direction.Forward, keysetOf(5L))
     val query = queryWithCurrent(offsetQuery, current)
     val result = Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected"))
-    expect.same(Left(CursorDecodingError.StrategyMismatch(Position.Offset.First, keysetOf(5L))), result)
+    expect.sameL(CursorDecodingError.StrategyMismatch(Position.Offset.First, keysetOf(5L)), result)
 
   pureTest("mismatch: keyset cursor against offset-only query (no KeysetField) is rejected"):
     val current = DecodedCursor(Direction.Forward, keysetOf(5L))
     val query = queryWithCurrent(offsetOnlyQuery, current)
     val result = Page.withPagination[Id, EventRow, TestFieldNoId](query, _ => sys.error("fetch not expected"))
-    expect.same(Left(CursorDecodingError.StrategyMismatch(Position.Offset.First, keysetOf(5L))), result)
+    expect.sameL(CursorDecodingError.StrategyMismatch(Position.Offset.First, keysetOf(5L)), result)
 
   pureTest("mismatch: offset cursor against keyset query (id sort) is rejected"):
     val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(10L))
     val query = queryWithCurrent(keysetQuery, current)
     val result = Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected"))
-    expect.same(Left(CursorDecodingError.StrategyMismatch(Position.Keyset.First, Position.Offset.unsafe(10L))), result)
+    expect.sameL(CursorDecodingError.StrategyMismatch(Position.Keyset.First, Position.Offset.unsafe(10L)), result)
 
   pureTest("mismatch: offset cursor against no-sort keyset default is rejected"):
     val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(10L))
     val query = queryWithCurrent(TestFixtures.emptyQueryWithId.copy(limit = limit), current)
     val result = Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected"))
-    expect.same(Left(CursorDecodingError.StrategyMismatch(Position.Keyset.First, Position.Offset.unsafe(10L))), result)
+    expect.sameL(CursorDecodingError.StrategyMismatch(Position.Keyset.First, Position.Offset.unsafe(10L)), result)
 
   // ---------- non-id keyset (multi-field cursor) ----------
 
@@ -561,4 +566,100 @@ object PagePaginationSuite extends SimpleIOSuite:
     List(
       expect.same(List(Position.Offset.First), captured.map(_.position)),
       expect.same(List(ListSet(TestField.Description.descending)), captured.map(_.sortBys))
+    ).combineAll
+
+  // ---------- absentable-field keyset ----------
+  // LastSeen is registered as absentable; rows 0..4 have Some lastSeen, rows 5..9 have None.
+  // Forward order with sort [LastSeen.asc, Id.asc] (Absent-last per ADR 0001):
+  //   ids 0, 1, 2, 3, 4 (Some asc), then ids 5, 6, 7, 8, 9 (None tiebroken by Id.asc).
+
+  private val absentSortQuery: Query[TestField] =
+    TestFixtures.emptyQueryWithId.copy(
+      sortBys = ListSet(TestField.LastSeen.ascending, TestField.Id.ascending),
+      limit = limit
+    )
+
+  pureTest("absent keyset: forward walk crosses Some/Absent boundary in canonical order"):
+    val page1 = pageWith(rowTable.fetch, absentSortQuery)
+    val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page2 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor2)))
+    val cursor3 = page2.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page3 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor3)))
+    val cursor4 = page3.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page4 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor4)))
+    val cursor5 = page4.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page5 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor5)))
+    List(
+      expect.same(Seq(0L, 1L), page1.data.map(_.id)),
+      expect.same(Seq(2L, 3L), page2.data.map(_.id)),
+      // page3 straddles the Some/Absent boundary: id 4 (Some) then id 5 (None).
+      expect.same(Seq(4L, 5L), page3.data.map(_.id)),
+      expect.same(Seq(6L, 7L), page4.data.map(_.id)),
+      expect.same(Seq(8L, 9L), page5.data.map(_.id)),
+      expect.same(None, page5.nextCursor)
+    ).combineAll
+
+  pureTest("absent keyset: page3's nextCursor anchors Absent in the LastSeen slot"):
+    val page1 = pageWith(rowTable.fetch, absentSortQuery)
+    val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page2 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor2)))
+    val cursor3 = page2.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page3 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor3)))
+    val cursor4 = page3.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val decoded = decodedOf(cursor4, absentSortQuery)
+    // page3 ends with id=5 (None lastSeen); cursor encodes (Absent, id=5).
+    expect.same(
+      DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5L)))),
+      decoded
+    )
+
+  pureTest("absent keyset: backward inside the Absent block round-trips to the prior page"):
+    // page4 = [(None,6), (None,7)] and page5 = [(None,8), (None,9)] both lie inside the Absent block.
+    val page4Cursor = pageWith(rowTable.fetch, absentSortQuery).nextCursor
+      .flatMap(c => pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(c))).nextCursor)
+      .flatMap(c => pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(c))).nextCursor)
+      .getOrElse(sys.error("expected next cursor"))
+    val page4 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(page4Cursor)))
+    val cursor5 = page4.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page5 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor5)))
+    val backCursor = page5.previousCursor.getOrElse(sys.error("expected previous cursor"))
+    val page4Again = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(backCursor)))
+    List(
+      expect.same(Seq(6L, 7L), page4.data.map(_.id)),
+      expect.same(Seq(8L, 9L), page5.data.map(_.id)),
+      expect.same(page4, page4Again)
+    ).combineAll
+
+  pureTest("absent keyset: forward then backward round-trips inside the Some block"):
+    val page1 = pageWith(rowTable.fetch, absentSortQuery)
+    val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page2 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor2)))
+    val backCursor = page2.previousCursor.getOrElse(sys.error("expected previous cursor"))
+    val pageBack = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(backCursor)))
+    val forwardCursor = pageBack.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page2Again = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(forwardCursor)))
+    List(
+      expect.same(Seq(0L, 1L), pageBack.data.map(_.id)),
+      expect.same(page2, page2Again)
+    ).combineAll
+
+  pureTest("absent keyset: backward across the Some/Absent boundary returns the canonical preceding slice"):
+    // Forward sequence: [0,1] [2,3] [4,5] [6,7] [8,9]. page4=[6,7] sits entirely in the Absent block;
+    // its previousCursor anchors at (Absent, 6), so the backward seek must cross into the Some block
+    // and return [4, 5] — the canonical slice immediately preceding page4.
+    val page1 = pageWith(rowTable.fetch, absentSortQuery)
+    val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page2 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor2)))
+    val cursor3 = page2.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page3 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor3)))
+    val cursor4 = page3.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page4 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor4)))
+    val backCursor = page4.previousCursor.getOrElse(sys.error("expected previous cursor"))
+    val pageBack = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(backCursor)))
+    val forwardCursor = pageBack.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page4Again = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(forwardCursor)))
+    List(
+      expect.same(Seq(6L, 7L), page4.data.map(_.id)),
+      expect.same(Seq(4L, 5L), pageBack.data.map(_.id)),
+      expect.same(page4, page4Again)
     ).combineAll

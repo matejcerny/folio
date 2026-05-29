@@ -2,6 +2,7 @@ package folio
 
 import cats.syntax.foldable.*
 import weaver.SimpleIOSuite
+import TestFixtures.*
 
 object FieldSchemaSuite extends SimpleIOSuite:
 
@@ -16,9 +17,9 @@ object FieldSchemaSuite extends SimpleIOSuite:
     val schema = summon[FieldSchema[TestField]]
 
     List(
-      expect.same(Right(TestField.Id), schema.fromName("id")),
-      expect.same(Right(TestField.Name), schema.fromName("name")),
-      expect.same(Right(TestField.CreatedAt), schema.fromName("created_at"))
+      expect.sameR(TestField.Id, schema.fromName("id")),
+      expect.sameR(TestField.Name, schema.fromName("name")),
+      expect.sameR(TestField.CreatedAt, schema.fromName("created_at"))
     ).combineAll
 
   pureTest("fromName returns Left for unknown name"):

@@ -4,6 +4,11 @@ ThisBuild / organizationName := "Matej Cerny"
 ThisBuild / startYear := Some(2026)
 ThisBuild / licenses := Seq(License.MIT)
 
+// === VERSIONS ===
+val CatsCoreV = "2.13.0"
+val WeaverV = "0.12.0"
+
+// === MODULES ===
 lazy val root = project
   .in(file("."))
   .aggregate(core, example)
@@ -18,33 +23,12 @@ lazy val core = project
   .settings(
     name := "folio-core",
     libraryDependencies ++= Seq(
-      "org.typelevel" %% "cats-core" % "2.13.0",
-      "org.typelevel" %% "weaver-cats" % "0.12.0" % Test
-    ),
-    // SCALADOC
-    // sbt-typelevel sets -project to the module name; replace with the top-level project name
-    Compile / doc / scalacOptions ~= (_.map { case "folio-core" => "folio"; case other => other }),
-    Compile / doc / scalacOptions ++= Seq(
-      "-siteroot",
-      ((ThisBuild / baseDirectory).value / "docs").getAbsolutePath,
-      "-social-links:github::https://github.com/matejcerny/folio",
-      "-project-logo", "docs/_assets/images/logo.png",
-      "-project-footer",
-      "Copyright Matej Cerny",
-      "-versions-dictionary-url",
-      "https://matejcerny.github.io/folio/versions.json",
-      "-snippet-compiler:nocompile"
-    ),
-    Compile / doc := {
-      val output = (Compile / doc).value
-      val assetsDir = (ThisBuild / baseDirectory).value / "docs" / "_assets"
-//      val favicon = assetsDir / "images" / "favicon.ico"
-//      if (favicon.exists()) IO.copyFile(favicon, output / "favicon.ico")
-      val customCss = assetsDir / "css" / "custom.css"
-      if (customCss.exists()) IO.copyFile(customCss, output / "styles" / "staticsitestyles.css")
-      output
-    }
+      "org.typelevel" %% "cats-core" % CatsCoreV,
+      "org.typelevel" %% "weaver-cats" % WeaverV % Test,
+      "org.typelevel" %% "weaver-scalacheck" % WeaverV % Test
+    )
   )
+  .settings(scaladoc *)
 
 lazy val example = project
   .in(file("example"))
@@ -54,3 +38,30 @@ lazy val example = project
     publish / skip := true,
     coverageEnabled := false
   )
+
+// === SCALADOC ===
+val scaladoc = Seq(
+  // sbt-typelevel sets -project to the module name; replace with the top-level project name
+  Compile / doc / scalacOptions ~= (_.map { case "folio-core" => "folio"; case other => other }),
+  Compile / doc / scalacOptions ++= Seq(
+    "-siteroot",
+    ((ThisBuild / baseDirectory).value / "site").getAbsolutePath,
+    "-social-links:github::https://github.com/matejcerny/folio",
+    "-project-logo",
+    "site/_assets/images/logo.png",
+    "-project-footer",
+    "Copyright Matej Cerny",
+    "-versions-dictionary-url",
+    "https://matejcerny.github.io/folio/versions.json",
+    "-snippet-compiler:nocompile"
+  ),
+  Compile / doc := {
+    val output = (Compile / doc).value
+    val assetsDir = (ThisBuild / baseDirectory).value / "site" / "_assets"
+    //      val favicon = assetsDir / "images" / "favicon.ico"
+    //      if (favicon.exists()) IO.copyFile(favicon, output / "favicon.ico")
+    val customCss = assetsDir / "css" / "custom.css"
+    if (customCss.exists()) IO.copyFile(customCss, output / "styles" / "staticsitestyles.css")
+    output
+  }
+)

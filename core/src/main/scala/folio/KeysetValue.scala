@@ -7,3 +7,4 @@ enum KeysetValue:
   case LongV(value: Long)
   case StringV(value: String)
   case TimestampV(value: OffsetDateTime)
+  case Absent

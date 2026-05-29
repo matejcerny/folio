@@ -4,16 +4,17 @@ import scala.collection.immutable.ListSet
 import scala.util.Try
 
 import weaver.SimpleIOSuite
+import TestFixtures.*
 
 object PositionSuite extends SimpleIOSuite:
 
-  private given KeysetField[TestField, Any] = KeysetField(TestField.Id, _ => 0L)
+  private given KeysetField[TestField, Any] = KeysetField.uniqueBy(TestField.Id, _ => 0L)
 
   // Variant where only CreatedAt has an extractor registered (no Name extractor),
   // used to exercise non-id keyset selection and unregistered-secondary fallback.
   private object WithCreatedAt:
     given KeysetField[TestField, Any] =
-      KeysetField(TestField.Id, (_: Any) => 0L).withField(TestField.CreatedAt, _ => "")
+      KeysetField.uniqueBy(TestField.Id, (_: Any) => 0L).withField(TestField.CreatedAt, _ => "")
 
   pureTest("IdField present + primary sort is id field returns Keyset(Nil)"):
     val query = Query.empty[TestField].copy(sortBys = ListSet(TestField.Id.ascending))
@@ -73,10 +74,10 @@ object PositionSuite extends SimpleIOSuite:
     expect.same(Position.Keyset.First, position)
 
   pureTest("Offset.apply rejects negative offsets"):
-    expect.same(Left("Offset must be non-negative, got -1"), Position.Offset(-1L))
+    expect.sameL("Offset must be non-negative, got -1", Position.Offset(-1L))
 
   pureTest("Offset.apply accepts zero"):
-    expect.same(Right(Position.Offset.First), Position.Offset(0L))
+    expect.sameR(Position.Offset.First, Position.Offset(0L))
 
   pureTest("Offset.unsafe throws IllegalArgumentException on negative input"):
     Try(Position.Offset.unsafe(-5L)).toEither match

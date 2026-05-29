@@ -7,6 +7,7 @@ import folio.CursorBytes.*
 import folio.FolioError.*
 
 import scala.collection.immutable.ListSet
+import scala.compiletime.summonFrom
 import scala.util.hashing.MurmurHash3
 
 opaque type Cursor = String
@@ -21,33 +22,97 @@ object Cursor:
   private val tagLongV: Byte = 0x02
   private val tagStringV: Byte = 0x03
   private val tagTimestampV: Byte = 0x04
+  private val tagAbsent: Byte = 0x05
 
   private val maxKeysetArity: Int = 16
 
   def apply(value: String): Cursor = value
 
-  def encode[FIELD: FieldSchema](decoded: DecodedCursor, query: Query[FIELD])(using codec: CursorCodec): Cursor =
-    val payload = byte(buildFlags(decoded)) ++ intBigEndian(hash(query)) ++ positionBytes(decoded.position)
+  inline def encode[FIELD: FieldSchema](decoded: DecodedCursor, query: Query[FIELD])(using
+      codec: CursorCodec
+  ): Cursor =
+    encodeWithFingerprint(decoded, computeFingerprint(query))
+
+  inline def decode[FIELD: FieldSchema](cursor: Cursor, query: Query[FIELD])(using
+      codec: CursorCodec
+  ): Either[CursorDecodingError, DecodedCursor] =
+    decodeWithFingerprint(cursor, query, computeFingerprint(query), summonKeysetMetadata[FIELD])
+
+  /** Compute the stale-cursor fingerprint for a [[Query]] given the absentable-field names contributed by an in-scope
+    * [[KeysetField]] (empty when keyset pagination is not in use).
+    */
+  private[folio] def fingerprintFor[FIELD: FieldSchema](
+      query: Query[FIELD],
+      absentableFieldNames: Set[String]
+  ): Int =
+    hash(query, absentableFieldNames.toList.sorted.mkString(","))
+
+  /** Build the field-name metadata needed to decode and validate cursors from a resolved [[KeysetField]]. */
+  private[folio] def keysetMetadataFor[FIELD: FieldSchema](
+      keysetField: KeysetField[FIELD, ?]
+  ): KeysetMetadata =
+    KeysetMetadata(Some(keysetField.field.name), keysetField.absentableFields.map(_.name))
+
+  private[folio] case class KeysetMetadata(
+      uniqueFieldName: Option[String],
+      absentableFieldNames: Set[String]
+  )
+
+  private[folio] object KeysetMetadata:
+    val empty: KeysetMetadata = KeysetMetadata(None, Set.empty)
+
+  private[folio] def encodeWithFingerprint(decoded: DecodedCursor, fingerprint: Int)(using
+      codec: CursorCodec
+  ): Cursor =
+    val payload = byte(buildFlags(decoded)) ++ intBigEndian(fingerprint) ++ positionBytes(decoded.position)
     codec.encode(payload.toList.toArray)
 
-  def decode[FIELD: FieldSchema](cursor: Cursor, query: Query[FIELD])(using
+  private[folio] def decodeWithFingerprint[FIELD: FieldSchema](
+      cursor: Cursor,
+      query: Query[FIELD],
+      fingerprint: Int,
+      metadata: KeysetMetadata
+  )(using codec: CursorCodec): Either[CursorDecodingError, DecodedCursor] =
+    decodeBytes(cursor, fingerprint).flatMap: decoded =>
+      validateAbsentSlots(decoded, query, metadata).map(_ => decoded)
+
+  private def decodeBytes(cursor: Cursor, fingerprint: Int)(using
       codec: CursorCodec
   ): Either[CursorDecodingError, DecodedCursor] =
     codec
       .decode(cursor)
       .flatMap: bytes =>
-        decodeProgram(query).runA(ReaderState(bytes, 0))
+        decodeProgram(fingerprint).runA(ReaderState(bytes, 0))
 
-  private def decodeProgram[FIELD: FieldSchema](query: Query[FIELD]): Read[DecodedCursor] =
+  private def decodeProgram(fingerprint: Int): Read[DecodedCursor] =
     for
       flags <- readByte("flags")
       _ <- Either.cond((flags & flagReservedMask) == 0, (), CursorDecodingError.MalformedFlags(flags)).liftRead
       hashValue <- readHash
-      _ <- Either.cond(hashValue == hash(query), (), CursorDecodingError.StaleCursor).liftRead
+      _ <- Either.cond(hashValue == fingerprint, (), CursorDecodingError.StaleCursor).liftRead
       isKeyset = (flags & flagPositionKeyset) != 0
       position <- if isKeyset then readKeysetPosition else readOffsetPosition
       _ <- requireExhausted
     yield DecodedCursor(decodeDirection(flags), position)
+
+  private def validateAbsentSlots[FIELD: FieldSchema](
+      decoded: DecodedCursor,
+      query: Query[FIELD],
+      metadata: KeysetMetadata
+  ): Either[CursorDecodingError, Unit] =
+    decoded.position match
+      case Position.Keyset(values) if values.nonEmpty =>
+        val sortFieldNames = query.sortBys.toList.map(_.field.name)
+        val cursorFieldNames = metadata.uniqueFieldName match
+          case Some(uniqueName) if !sortFieldNames.contains(uniqueName) => sortFieldNames :+ uniqueName
+          case _                                                        => sortFieldNames
+        cursorFieldNames
+          .zip(values)
+          .collectFirst:
+            case (fieldName, KeysetValue.Absent) if !metadata.absentableFieldNames.contains(fieldName) =>
+              CursorDecodingError.AbsentInRequiredField(fieldName)
+          .toLeft(())
+      case _ => Right(())
 
   extension (cursor: Cursor) def value: String = cursor
 
@@ -68,6 +133,7 @@ object Cursor:
     case KeysetValue.LongV(longValue)           => byte(tagLongV) ++ longBytes(longValue)
     case KeysetValue.StringV(stringValue)       => byte(tagStringV) ++ stringBytes(stringValue)
     case KeysetValue.TimestampV(timestampValue) => byte(tagTimestampV) ++ timestampBytes(timestampValue)
+    case KeysetValue.Absent                     => byte(tagAbsent)
 
   private val readKeysetValue: Read[KeysetValue] =
     readByte("keyset tag").flatMap:
@@ -75,6 +141,7 @@ object Cursor:
       case `tagLongV`      => readLong("LongV value").map(KeysetValue.LongV.apply)
       case `tagStringV`    => readString("StringV").map(KeysetValue.StringV.apply)
       case `tagTimestampV` => readTimestamp("TimestampV").map(KeysetValue.TimestampV.apply)
+      case `tagAbsent`     => Right(KeysetValue.Absent: KeysetValue).liftRead
       case other           => Left(CursorDecodingError.UnknownKeysetTag(other)).liftRead
 
   private def readKeysetValues(count: Int): Read[List[KeysetValue]] =
@@ -114,12 +181,24 @@ object Cursor:
       case _: FilterBy.ExactMatch[?] => "exact"
     s"${filter.field.name}:$filterType:${filter.value}"
 
-  private def hash[FIELD: FieldSchema](query: Query[FIELD]): Int =
+  private def hash[FIELD: FieldSchema](query: Query[FIELD], absentPart: String): Int =
     val limit = query.limit.value.toString
     val sort = sortPart(query.sortBys)
     val filter = query.filters.toSeq.map(singleFilterPart).sorted.mkString(",")
-    MurmurHash3.stringHash(s"$limit;$sort;$filter")
+    MurmurHash3.stringHash(s"$limit;$sort;$filter;$absentPart")
+
+  private inline def computeFingerprint[FIELD: FieldSchema](query: Query[FIELD]): Int =
+    summonFrom:
+      case keysetField: KeysetField[FIELD, ?] => fingerprintFor(query, keysetField.absentableFields.map(_.name))
+      case _                                  => fingerprintFor(query, Set.empty)
+
+  private inline def summonKeysetMetadata[FIELD: FieldSchema]: KeysetMetadata =
+    summonFrom:
+      case keysetField: KeysetField[FIELD, ?] => keysetMetadataFor(keysetField)
+      case _                                  => KeysetMetadata.empty
 
 extension (cursor: Cursor)
-  def decode[FIELD: FieldSchema](query: Query[FIELD])(using CursorCodec): Either[CursorDecodingError, DecodedCursor] =
+  inline def decode[FIELD: FieldSchema](query: Query[FIELD])(using
+      CursorCodec
+  ): Either[CursorDecodingError, DecodedCursor] =
     Cursor.decode(cursor, query)

@@ -26,6 +26,7 @@ object FieldSchema:
     val cases = enumerateCases[m.MirroredElemTypes, FIELD]
     val forwardMap = cases.map(c => c -> toName(c)).toMap
     val reverseMap = forwardMap.map((f, n) => n -> f)
+
     new Schema(forwardMap, reverseMap)
 
   private inline def enumerateCases[ElemTypes <: Tuple, FIELD]: List[FIELD] =
@@ -38,9 +39,9 @@ object FieldSchema:
   ): (Map[FIELD, String], Map[String, FIELD]) =
     val cases = enumerateCases[m.MirroredElemTypes, FIELD]
     val labels = constValueTuple[m.MirroredElemLabels].toList.asInstanceOf[List[String]]
-
     val fieldsToNames = cases.zip(labels).map((field, label) => field -> transform(label)).toMap
     val namesToFields = fieldsToNames.map((field, name) => name -> field)
+
     (fieldsToNames, namesToFields)
 
   /** Derives a FieldSchema by automatically converting the enum case names into snake case strings. */

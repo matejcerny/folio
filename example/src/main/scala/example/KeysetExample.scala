@@ -2,38 +2,41 @@ package example
 
 import folio.*
 
+import java.time.OffsetDateTime
 import scala.collection.immutable.ListSet
 
-case class Message(id: Long, enqueuedAt: String, lastReadAt: String)
+case class Message(id: Long, enqueuedAt: OffsetDateTime, lastReadAt: Option[OffsetDateTime])
 
 // Step 1: Define the fields your entity can be sorted/filtered by +
 // derive schema which maps enum cases to column name strings used in cursors.
 enum MessageField derives FieldSchema.SnakeCase:
   case Id, EnqueuedAt, LastReadAt
 
-// Step 2: Designate the id field and how to extract it from a row — opts in to keyset pagination.
+// Step 2: Designate the unique field and how to extract it from a row — opts in to keyset pagination.
 // Register additional sort fields via `.withField(...)` so keyset works on those columns too;
-// the id field always serves as the deterministic tiebreaker.
+// `T => Option[V]` marks the field as absentable, so missing values encode as `KeysetValue.Absent`
+// and sort after present values regardless of direction.
 given KeysetField[MessageField, Message] =
-  KeysetField(MessageField.Id, (message: Message) => message.id)
+  KeysetField
+    .uniqueBy(MessageField.Id, (message: Message) => message.id)
     .withField(MessageField.EnqueuedAt, _.enqueuedAt)
     .withField(MessageField.LastReadAt, _.lastReadAt)
 
 @main def runKeysetExample(): Unit =
   val rows = Seq(
-    Message(1, "2024-01-01", "2024-01-02"),
-    Message(2, "2024-01-03", "2024-01-04"),
-    Message(3, "2024-01-05", "2024-01-06")
+    Message(1, OffsetDateTime.parse("2024-01-01T00:00:00Z"), Some(OffsetDateTime.parse("2024-01-02T00:00:00Z"))),
+    Message(2, OffsetDateTime.parse("2024-01-03T00:00:00Z"), None),
+    Message(3, OffsetDateTime.parse("2024-01-05T00:00:00Z"), Some(OffsetDateTime.parse("2024-01-06T00:00:00Z")))
   )
 
   val query = Query(
     filters = Set.empty,
-    sortBys = ListSet(MessageField.EnqueuedAt.ascending),
+    sortBys = ListSet(MessageField.LastReadAt.descending),
     limit = 2.items
   )
 
-  // With KeysetField in scope and EnqueuedAt registered via `.withField`,
-  // this picks keyset; the cursor anchor is (enqueuedAt, id).
+  // With KeysetField in scope and LastReadAt registered as absentable via `.withField` (Option overload),
+  // this picks keyset; the cursor anchor is (lastReadAt, id) and a missing lastReadAt encodes as Absent.
   Page
     .withPagination[cats.Id, Message, MessageField](query, _ => rows)
     .fold(

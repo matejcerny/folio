@@ -6,7 +6,7 @@ import java.util.Base64
 object CursorTestKit:
 
   /** Returns the 4 hash bytes from any encoded cursor for the given query (positions 1..5 of the binary frame). */
-  def hashBytes[FIELD: FieldSchema](query: Query[FIELD])(using CursorCodec): Array[Byte] =
+  inline def hashBytes[FIELD: FieldSchema](query: Query[FIELD])(using CursorCodec): Array[Byte] =
     val baseline = Cursor.encode(DecodedCursor(Direction.Forward, Position.Keyset(Nil)), query)
     val raw = Base64.getUrlDecoder.decode(baseline.value)
     raw.slice(1, 5)

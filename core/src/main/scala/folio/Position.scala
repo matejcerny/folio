@@ -5,6 +5,7 @@ import scala.compiletime.summonFrom
 sealed trait Position(val asString: String)
 
 object Position:
+
   /** Keyset pagination: tracks the keyset anchor as a list of typed values, one per cursor field. */
   case class Keyset(values: List[KeysetValue]) extends Position("keyset")
   object Keyset:
@@ -42,7 +43,7 @@ object Position:
       case keysetField: KeysetField[FIELD, ?] => fromQueryKeyset(query, keysetField)
       case _                                  => Offset.First
 
-  private def fromQueryKeyset[FIELD](
+  private[folio] def fromQueryKeyset[FIELD](
       query: Query[FIELD],
       keysetField: KeysetField[FIELD, ?]
   ): Position =

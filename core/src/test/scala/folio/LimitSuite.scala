@@ -2,24 +2,34 @@ package folio
 
 import scala.util.Try
 
+import org.scalacheck.Gen
 import weaver.SimpleIOSuite
+import weaver.scalacheck.Checkers
+import TestFixtures.*
 
-object LimitSuite extends SimpleIOSuite:
+object LimitSuite extends SimpleIOSuite with Checkers:
 
-  pureTest("Limit.apply accepts positive within bounds"):
-    expect.same(Right(25), Limit(25).map(_.value))
+  private val validLimits = Gen.choose(1, 100_000)
+  private val negativeInts = Gen.choose(Int.MinValue, -1)
+  private val aboveMaxInts = Gen.choose(100_001, Int.MaxValue)
+
+  test("Limit.apply accepts any positive int in range"):
+    forall(validLimits): n =>
+      expect.sameR(n, Limit(n).map(_.value))
 
   pureTest("Limit.apply rejects zero"):
-    expect.same(Limit(0), Left("Limit must be in range (0, 100000], got 0"))
+    expect.sameL("Limit must be in range (0, 100000], got 0", Limit(0))
 
-  pureTest("Limit.apply rejects negatives"):
-    expect.same(Limit(-1), Left("Limit must be in range (0, 100000], got -1"))
+  test("Limit.apply rejects any negative int"):
+    forall(negativeInts): n =>
+      expect.sameL(s"Limit must be in range (0, 100000], got $n", Limit(n))
 
-  pureTest("Limit.apply rejects above max"):
-    expect.same(Limit(100_001), Left("Limit must be in range (0, 100000], got 100001"))
+  test("Limit.apply rejects any int above max"):
+    forall(aboveMaxInts): n =>
+      expect.sameL(s"Limit must be in range (0, 100000], got $n", Limit(n))
 
   pureTest("Limit.apply accepts max"):
-    expect.same(Right(100_000), Limit(100_000).map(_.value))
+    expect.sameR(100_000, Limit(100_000).map(_.value))
 
   pureTest("Limit.unsafe accepts a valid value"):
     expect.same(25, Limit.unsafe(25).value)
