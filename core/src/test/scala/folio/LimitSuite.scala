@@ -1,5 +1,7 @@
 package folio
 
+import scala.util.Try
+
 import weaver.SimpleIOSuite
 
 object LimitSuite extends SimpleIOSuite:
@@ -21,6 +23,18 @@ object LimitSuite extends SimpleIOSuite:
 
   pureTest("Limit.unsafe accepts a valid value"):
     expect.same(25, Limit.unsafe(25).value)
+
+  pureTest("Limit.unsafe throws IllegalArgumentException on zero"):
+    Try(Limit.unsafe(0)).toEither match
+      case Left(error: IllegalArgumentException) =>
+        expect(clue(error.getMessage).contains("Limit must be in range (0, 100000], got 0"))
+      case other => failure(s"expected IllegalArgumentException, got $other")
+
+  pureTest("Limit.unsafe throws IllegalArgumentException above max"):
+    Try(Limit.unsafe(100_001)).toEither match
+      case Left(error: IllegalArgumentException) =>
+        expect(clue(error.getMessage).contains("Limit must be in range (0, 100000], got 100001"))
+      case other => failure(s"expected IllegalArgumentException, got $other")
 
   pureTest("Limit.Default is 10"):
     expect.same(10, Limit.Default.value)

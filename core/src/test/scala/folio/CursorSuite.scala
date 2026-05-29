@@ -70,11 +70,36 @@ object CursorSuite extends SimpleIOSuite:
     expect.same(expected.toSeq, decodeBase64Url(cursor.value).toSeq)
 
   pureTest("decoding rejects keyset with arity above maxKeysetArity"):
-    val decoded = DecodedCursor(Direction.Forward, keysetOf("foo", "bar"))
+    val decoded =
+      DecodedCursor(Direction.Forward, Position.Keyset(List.tabulate(17)(i => KeysetValue.IntV(i))))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
 
-    expect.same(Left(CursorDecodingError.KeysetArityExceeded(2L, 1)), roundtrip)
+    expect.same(Left(CursorDecodingError.KeysetArityExceeded(17L, 16)), roundtrip)
+
+  pureTest("roundtrip for keyset with three values (string, timestamp, long)"):
+    val timestamp = java.time.OffsetDateTime.parse("2024-01-15T10:30:00Z")
+    val decoded = DecodedCursor(
+      Direction.Forward,
+      Position.Keyset(
+        List(
+          KeysetValue.StringV("alpha"),
+          KeysetValue.TimestampV(timestamp),
+          KeysetValue.LongV(99L)
+        )
+      )
+    )
+    val cursor = Cursor.encode(decoded, baseQuery)
+    val roundtrip = Cursor.decode(cursor, baseQuery)
+
+    expect.same(Right(decoded), roundtrip)
+
+  pureTest("roundtrip for keyset with IntV value"):
+    val decoded = DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.IntV(42))))
+    val cursor = Cursor.encode(decoded, baseQuery)
+    val roundtrip = Cursor.decode(cursor, baseQuery)
+
+    expect.same(Right(decoded), roundtrip)
 
   pureTest("roundtrip for keyset value containing the legacy length separator"):
     val decoded = DecodedCursor(Direction.Forward, keysetOf("a::b"))
@@ -291,18 +316,18 @@ object CursorSuite extends SimpleIOSuite:
       payload = CursorTestKit.hex("ff ff ff ff 07")
     )
     Cursor.decode(cursor, baseQuery) match
-      case Left(CursorDecodingError.KeysetArityExceeded(_, 1)) => success
-      case other                                               => failure(s"expected KeysetArityExceeded, got $other")
+      case Left(CursorDecodingError.KeysetArityExceeded(_, 16)) => success
+      case other                                                => failure(s"expected KeysetArityExceeded, got $other")
 
-  pureTest("decode rejects forged keyset cursor with arity 2"):
+  pureTest("decode rejects forged keyset cursor with arity above max"):
     val cursor = CursorTestKit.buildCursor(
       flags = 0x02.toByte,
       hash = CursorTestKit.hashBytes(baseQuery),
-      payload = CursorTestKit.hex("02")
+      payload = CursorTestKit.hex("11")
     )
     val decoded = Cursor.decode(cursor, baseQuery)
 
-    expect.same(Left(CursorDecodingError.KeysetArityExceeded(2L, 1)), decoded)
+    expect.same(Left(CursorDecodingError.KeysetArityExceeded(17L, 16)), decoded)
 
   pureTest("decode rejects forged keyset cursor whose varint count overflows Long signedness"):
     // 10 bytes whose varint decodes to a negative Long when interpreted as signed
@@ -313,7 +338,7 @@ object CursorSuite extends SimpleIOSuite:
       payload = payload
     )
     Cursor.decode(cursor, baseQuery) match
-      case Left(CursorDecodingError.KeysetArityExceeded(count, 1)) if count < 0L => success
+      case Left(CursorDecodingError.KeysetArityExceeded(count, 16)) if count < 0L => success
       case other => failure(s"expected KeysetArityExceeded with negative count, got $other")
 
   pureTest("decode rejects forged IntV with zigzag-decoded value above Int.MaxValue with IntOutOfRange"):

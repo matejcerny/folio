@@ -33,11 +33,11 @@ object Page:
       query: Query[FIELD],
       fetchRows: ResolvedQuery[FIELD] => F[Seq[T]]
   )(using CursorCodec): F[Either[CursorDecodingError, Page[T]]] =
-    val (advance, defaultSortBys): (CursorAdvance[T], ListSet[SortBy[FIELD]]) = summonFrom:
+    val (advance, defaultSortBys): (CursorAdvance[FIELD, T], ListSet[SortBy[FIELD]]) = summonFrom:
       case keysetField: KeysetField[FIELD, T] =>
-        (CursorAdvance.keysetAware[T](keysetField), ListSet(keysetField.field.ascending))
+        (CursorAdvance.keysetAware[FIELD, T](keysetField), ListSet(keysetField.field.ascending))
       case _ =>
-        (CursorAdvance.offsetOnly[T], ListSet.empty[SortBy[FIELD]])
+        (CursorAdvance.offsetOnly[FIELD, T], ListSet.empty[SortBy[FIELD]])
 
     // Resolve the fallback "first position" here so summonFrom inside Position.fromQuery
     // sees the concrete FIELD's KeysetField at the inline call site.
@@ -48,7 +48,7 @@ object Page:
   private def paginate[F[_]: Applicative, T, FIELD: FieldSchema](
       query: Query[FIELD],
       fetchRows: ResolvedQuery[FIELD] => F[Seq[T]],
-      advance: CursorAdvance[T],
+      advance: CursorAdvance[FIELD, T],
       firstPosition: Position,
       defaultSortBys: ListSet[SortBy[FIELD]]
   )(using CursorCodec): F[Either[CursorDecodingError, Page[T]]] =
@@ -88,8 +88,8 @@ object Page:
           if ordered.isEmpty then Page.empty(limit)
           else
             val nextCursor = Option.when(isBackward || hasMore):
-              DecodedCursor(Direction.Forward, advance.next(fetchPosition, ordered, limit)).encode(query)
+              DecodedCursor(Direction.Forward, advance.next(fetchPosition, sortBys, ordered, limit)).encode(query)
             val previousCursor = Option.when((isBackward && hasMore) || (!isBackward && !current.isFirst)):
-              DecodedCursor(Direction.Backward, advance.previous(fetchPosition, ordered, limit)).encode(query)
+              DecodedCursor(Direction.Backward, advance.previous(fetchPosition, sortBys, ordered, limit)).encode(query)
 
             Page(limit, previousCursor, nextCursor, ordered)

@@ -5,11 +5,7 @@ import scala.compiletime.summonFrom
 sealed trait Position(val asString: String)
 
 object Position:
-  /** Keyset pagination: tracks the keyset anchor as a list of typed values.
-    *
-    * At present the list has size 0 (first page) or 1 (id only); the list shape is forward-compatible with multi-column
-    * keyset that has not landed yet.
-    */
+  /** Keyset pagination: tracks the keyset anchor as a list of typed values, one per cursor field. */
   case class Keyset(values: List[KeysetValue]) extends Position("keyset")
   object Keyset:
     val First: Keyset = Keyset(Nil)
@@ -34,8 +30,8 @@ object Position:
 
   /** Picks the pagination strategy from a [[Query]]:
     *   - When [[KeysetField]] is available:
-    *     - Primary sort field == id field -> [[Keyset]] (keyset, O(1) seek)
-    *     - Other primary sort field -> [[Offset]] (offset)
+    *     - All sort fields registered (via `KeysetField.apply` / `.withField`) -> [[Keyset]] (O(1) seek)
+    *     - Any sort field not registered -> [[Offset]] (offset fallback)
     *     - No sort specified -> [[Keyset]] with default ascending id sort (materialized into [[ResolvedQuery.sortBys]]
     *       by [[Page.withPagination]])
     *   - When [[KeysetField]] is not available:
@@ -43,12 +39,14 @@ object Position:
     */
   inline def fromQuery[FIELD: FieldSchema](query: Query[FIELD]): Position =
     summonFrom:
-      case keysetField: KeysetField[FIELD, ?] => fromQueryKeyset(query, keysetField.field)
+      case keysetField: KeysetField[FIELD, ?] => fromQueryKeyset(query, keysetField)
       case _                                  => Offset.First
 
-  private def fromQueryKeyset[FIELD](query: Query[FIELD], idField: FIELD): Position =
-    query.sortBys.headOption
-      .map:
-        case primary if primary.field == idField => Keyset.First
-        case _                                   => Offset.First
-      .getOrElse(Keyset.First)
+  private def fromQueryKeyset[FIELD](
+      query: Query[FIELD],
+      keysetField: KeysetField[FIELD, ?]
+  ): Position =
+    val sortFields = query.sortBys.toList.map(_.field)
+    if sortFields.isEmpty then Keyset.First
+    else if sortFields.forall(keysetField.fields.contains) then Keyset.First
+    else Offset.First

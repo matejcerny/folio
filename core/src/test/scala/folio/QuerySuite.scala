@@ -1,5 +1,7 @@
 package folio
 
+import scala.collection.immutable.ListSet
+
 import weaver.SimpleIOSuite
 
 object QuerySuite extends SimpleIOSuite:
@@ -15,3 +17,7 @@ object QuerySuite extends SimpleIOSuite:
 
   pureTest("Query.empty has no sortBys"):
     expect(clue(TestFixtures.emptyQueryWithId.sortBys).isEmpty)
+
+  pureTest("Query constructor defaults cursor to None when omitted"):
+    val query = Query[TestField](Set.empty, ListSet.empty, Limit.Default)
+    expect.same(None, query.cursor)

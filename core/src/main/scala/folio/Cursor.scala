@@ -22,8 +22,7 @@ object Cursor:
   private val tagStringV: Byte = 0x03
   private val tagTimestampV: Byte = 0x04
 
-  // Must move together with CursorAdvance.keysetAware when multi-column keyset lands.
-  private val maxKeysetArity: Int = 1
+  private val maxKeysetArity: Int = 16
 
   def apply(value: String): Cursor = value
 

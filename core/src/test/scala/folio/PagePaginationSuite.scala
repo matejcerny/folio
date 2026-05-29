@@ -14,8 +14,9 @@ object PagePaginationSuite extends SimpleIOSuite:
   private val limit = 2.items
 
   private val keysetQuery: Query[TestField] = TestFixtures.queryWithIdSort.copy(limit = limit)
+  // Description is intentionally not registered as a keyset field, so this query falls back to offset.
   private val offsetQuery: Query[TestField] =
-    TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.CreatedAt.descending), limit = limit)
+    TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Description.descending), limit = limit)
   private val offsetOnlyQuery: Query[TestFieldNoId] =
     TestFixtures.emptyQueryNoId.copy(sortBys = ListSet(TestFieldNoId.Timestamp.descending), limit = limit)
 
@@ -23,7 +24,7 @@ object PagePaginationSuite extends SimpleIOSuite:
   private val eventTable: InMemoryTable[TestFieldNoId, EventRow] =
     InMemoryTable(TestFixtures.events, TestFixtures.eventExtract)
 
-  private def syntheticRow(id: Long): Row = Row(id, name = "", createdAt = "")
+  private def syntheticRow(id: Long): Row = Row(id, name = "", createdAt = "", description = "")
   private def syntheticRows(ids: Long*): Seq[Row] = ids.map(syntheticRow)
 
   private def decodedOf[FIELD: FieldSchema](cursor: Cursor, query: Query[FIELD]): DecodedCursor =
@@ -263,8 +264,10 @@ object PagePaginationSuite extends SimpleIOSuite:
 
   // ---------- realistic fetcher ----------
 
+  // Sort by Description (unregistered) keeps offset semantics; description == createdAt for all rows
+  // so the realistic data assertions land in the same order as a CreatedAt asc sort.
   private val realisticOffsetQuery: Query[TestField] =
-    TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.CreatedAt.ascending), limit = limit)
+    TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Description.ascending), limit = limit)
 
   pureTest("realistic offset: forward through full dataset returns contiguous slices"):
     val page1 = pageWith(rowTable.fetch, realisticOffsetQuery)
@@ -294,7 +297,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     val next = page.nextCursor.map(decodedOf(_, query))
     val previous = page.previousCursor.map(decodedOf(_, query))
     List(
-      expect.same(List(ListSet(TestField.CreatedAt.ascending)), captured.map(_.sortBys)),
+      expect.same(List(ListSet(TestField.Description.ascending)), captured.map(_.sortBys)),
       expect.same(List(Position.Offset.unsafe(4L)), captured.map(_.position)),
       expect.same(Seq(0L, 5L), page.data.map(_.id)),
       expect.same(Some(DecodedCursor(Direction.Forward, Position.Offset.unsafe(6L))), next),
@@ -495,3 +498,67 @@ object PagePaginationSuite extends SimpleIOSuite:
     val query = queryWithCurrent(TestFixtures.emptyQueryWithId.copy(limit = limit), current)
     val result = Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected"))
     expect.same(Left(CursorDecodingError.StrategyMismatch(Position.Keyset.First, Position.Offset.unsafe(10L))), result)
+
+  // ---------- non-id keyset (multi-field cursor) ----------
+
+  private val createdAtKeysetQuery: Query[TestField] =
+    TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.CreatedAt.ascending), limit = limit)
+
+  pureTest("non-id keyset: CreatedAt asc round-trips forward through dataset with id tiebreaker"):
+    val page1 = pageWith(rowTable.fetch, createdAtKeysetQuery)
+    val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page2 = pageWith(rowTable.fetch, createdAtKeysetQuery.copy(cursor = Some(cursor2)))
+    val cursor3 = page2.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page3 = pageWith(rowTable.fetch, createdAtKeysetQuery.copy(cursor = Some(cursor3)))
+    // CreatedAt asc: 2 (01-01), 4 (01-02), 1 (01-03), 6 (01-04), 0 (01-05), 5 (01-06), 7 (01-07), 3 (01-08), ...
+    List(
+      expect.same(Seq(2L, 4L), page1.data.map(_.id)),
+      expect.same(Seq(1L, 6L), page2.data.map(_.id)),
+      expect.same(Seq(0L, 5L), page3.data.map(_.id))
+    ).combineAll
+
+  pureTest("non-id keyset: CreatedAt asc round-trips backward to the previous slice"):
+    val page1 = pageWith(rowTable.fetch, createdAtKeysetQuery)
+    val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page2 = pageWith(rowTable.fetch, createdAtKeysetQuery.copy(cursor = Some(cursor2)))
+    val backCursor = page2.previousCursor.getOrElse(sys.error("expected previous cursor"))
+    val pageBack = pageWith(rowTable.fetch, createdAtKeysetQuery.copy(cursor = Some(backCursor)))
+    val forwardCursor = pageBack.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val page2Again = pageWith(rowTable.fetch, createdAtKeysetQuery.copy(cursor = Some(forwardCursor)))
+    List(
+      expect.same(Seq(1L, 6L), page2.data.map(_.id)),
+      expect.same(Seq(2L, 4L), pageBack.data.map(_.id)),
+      expect.same(page2, page2Again)
+    ).combineAll
+
+  pureTest("non-id keyset: CreatedAt asc cursor decodes to 2-element keyset (StringV, LongV)"):
+    val page1 = pageWith(rowTable.fetch, createdAtKeysetQuery)
+    val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val decoded = decodedOf(cursor2, createdAtKeysetQuery)
+    // page1 ends with row id=4 createdAt=2024-01-02; cursor encodes (createdAt, id) for the last displayed row
+    expect.same(
+      DecodedCursor(
+        Direction.Forward,
+        Position.Keyset(List(KeysetValue.StringV("2024-01-02"), KeysetValue.LongV(4L)))
+      ),
+      decoded
+    )
+
+  pureTest("non-id keyset: CreatedAt asc cursor reaches fetcher as 2-element keyset position"):
+    val page1 = pageWith(rowTable.fetch, createdAtKeysetQuery)
+    val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
+    val (captured, _) = pageCapturing(rowTable.fetch, createdAtKeysetQuery.copy(cursor = Some(cursor2)))
+    expect.same(
+      List(Position.Keyset(List(KeysetValue.StringV("2024-01-02"), KeysetValue.LongV(4L)))),
+      captured.map(_.position)
+    )
+
+  pureTest("non-id keyset fallback: sort by unregistered field falls back to offset"):
+    // Description is unregistered, so Position.fromQuery resolves to Offset.First.
+    val unregisteredSortQuery: Query[TestField] =
+      TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Description.descending), limit = limit)
+    val (captured, _) = pageCapturing(rowTable.fetch, unregisteredSortQuery)
+    List(
+      expect.same(List(Position.Offset.First), captured.map(_.position)),
+      expect.same(List(ListSet(TestField.Description.descending)), captured.map(_.sortBys))
+    ).combineAll

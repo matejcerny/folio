@@ -172,3 +172,10 @@ object CursorBytesSuite extends SimpleIOSuite:
       Left(CursorDecodingError.MalformedTimestampField("test offset-seconds", tooSmall)),
       runRead(bytes)(readTimestamp("test"))
     )
+
+  pureTest("readTimestamp returns MalformedTimestamp when epoch second exceeds Instant bounds"):
+    // epochSecond = Long.MaxValue is far above Instant.MAX (31556889864403199), so OffsetDateTime.ofInstant throws.
+    val bytes = longBytes(Long.MaxValue) ++ unsignedVarint(0L) ++ longBytes(0L)
+    runRead(bytes)(readTimestamp("test")) match
+      case Left(_: CursorDecodingError.MalformedTimestamp) => success
+      case other                                           => failure(s"expected MalformedTimestamp, got $other")

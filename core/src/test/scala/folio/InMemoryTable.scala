@@ -8,7 +8,7 @@ final class InMemoryTable[FIELD: FieldSchema, T](rows: Vector[T], extract: (FIEL
   inline def fetch(resolved: ResolvedQuery[FIELD]): Seq[T] =
     val filtered = rows.filter(matches(_, resolved.filters))
     val sorted = applySort(filtered, resolved.sortBys)
-    val skipped = applyPosition(sorted, resolved.position)
+    val skipped = applyPosition(sorted, resolved.position, resolved.sortBys)
     skipped.take(resolved.limit.value)
 
   private def matches(row: T, filters: Set[FilterBy[FIELD]]): Boolean =
@@ -26,14 +26,24 @@ final class InMemoryTable[FIELD: FieldSchema, T](rows: Vector[T], extract: (FIEL
       val combined = orderings.reduceLeft(_.orElse(_))
       rows.sorted(using combined)
 
-  private inline def applyPosition(sorted: Vector[T], position: Position): Vector[T] =
+  private inline def applyPosition(
+      sorted: Vector[T],
+      position: Position,
+      sortBys: ListSet[SortBy[FIELD]]
+  ): Vector[T] =
     position match
-      case Position.Offset(offset)         => sorted.drop(offset.toInt)
-      case Position.Keyset(Nil)            => sorted
-      case Position.Keyset(encodedId :: _) =>
+      case Position.Offset(offset) => sorted.drop(offset.toInt)
+      case Position.Keyset(Nil)    => sorted
+      case Position.Keyset(values) =>
         summonFrom:
           case keysetField: KeysetField[FIELD, T] =>
+            val cursorFields = CursorAdvance.cursorFieldsFor(sortBys, keysetField.field)
             val anchor = sorted.indexWhere: row =>
-              keysetField.codec.toKeysetValue(keysetField.rowId(row)) == encodedId
+              cursorFields
+                .zip(values)
+                .forall: (field, expected) =>
+                  keysetField.fields.get(field) match
+                    case Some(extractor) => extractor.encodedFromRow(row) == expected
+                    case None            => keysetField.codec.toKeysetValue(keysetField.rowId(row)) == expected
             if anchor < 0 then sorted else sorted.drop(anchor + 1)
           case _ => sorted

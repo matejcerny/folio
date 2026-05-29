@@ -12,7 +12,12 @@ enum MessageField derives FieldSchema.SnakeCase:
   case Id, EnqueuedAt, LastReadAt
 
 // Step 2: Designate the id field and how to extract it from a row — opts in to keyset pagination.
-given KeysetField[MessageField, Message] = KeysetField(MessageField.Id, _.id)
+// Register additional sort fields via `.withField(...)` so keyset works on those columns too;
+// the id field always serves as the deterministic tiebreaker.
+given KeysetField[MessageField, Message] =
+  KeysetField(MessageField.Id, (message: Message) => message.id)
+    .withField(MessageField.EnqueuedAt, _.enqueuedAt)
+    .withField(MessageField.LastReadAt, _.lastReadAt)
 
 @main def runKeysetExample(): Unit =
   val rows = Seq(
@@ -22,13 +27,13 @@ given KeysetField[MessageField, Message] = KeysetField(MessageField.Id, _.id)
   )
 
   val query = Query(
-    filters = Set(FilterBy.ExactMatch(MessageField.LastReadAt, "2024-01-01")),
-    sortBys = ListSet(MessageField.Id.ascending),
+    filters = Set.empty,
+    sortBys = ListSet(MessageField.EnqueuedAt.ascending),
     limit = 2.items
   )
 
-  // Build a Page of results using the pagination helper.
-  // With KeysetField in scope and primary sort = id, this picks keyset.
+  // With KeysetField in scope and EnqueuedAt registered via `.withField`,
+  // this picks keyset; the cursor anchor is (enqueuedAt, id).
   Page
     .withPagination[cats.Id, Message, MessageField](query, _ => rows)
     .fold(
@@ -36,4 +41,8 @@ given KeysetField[MessageField, Message] = KeysetField(MessageField.Id, _.id)
       page =>
         println(s"Next:      ${page.nextCursor.map(_.value)}")
         println(s"Previous:  ${page.previousCursor.map(_.value)}")
+        page.nextCursor.foreach: cursor =>
+          Cursor.decode(cursor, query) match
+            case Right(decoded) => println(s"Next decoded: $decoded")
+            case Left(error)    => println(s"Decode error: $error")
     )
