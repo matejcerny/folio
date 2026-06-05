@@ -481,10 +481,15 @@ object PagePaginationSuite extends SimpleIOSuite:
   // ---------- strategy mismatch ----------
 
   pureTest("mismatch: keyset cursor against offset query (KeysetField in scope, non-id sort) is rejected"):
-    val current = DecodedCursor(Direction.Forward, keysetOf(5L))
+    // offsetQuery has sortBys = [Description.descending]; KeysetField has Id registered.
+    // The encoded keyset must therefore carry two values (description + id) to satisfy arity validation
+    // before reaching the strategy-mismatch check.
+    val keysetPosition =
+      Position.Keyset(List(KeysetValue.StringV("ignored"), KeysetValue.LongV(5L)))
+    val current = DecodedCursor(Direction.Forward, keysetPosition)
     val query = queryWithCurrent(offsetQuery, current)
     val result = Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected"))
-    expect.sameL(CursorDecodingError.StrategyMismatch(Position.Offset.First, keysetOf(5L)), result)
+    expect.sameL(CursorDecodingError.StrategyMismatch(Position.Offset.First, keysetPosition), result)
 
   pureTest("mismatch: keyset cursor against offset-only query (no KeysetField) is rejected"):
     val current = DecodedCursor(Direction.Forward, keysetOf(5L))

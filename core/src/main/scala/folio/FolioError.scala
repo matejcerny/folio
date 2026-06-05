@@ -32,6 +32,10 @@ object FolioError:
         extends CursorDecodingError(s"Invalid cursor: offset must be non-negative, got $value")
     case class KeysetArityExceeded(count: Long, max: Int)
         extends CursorDecodingError(s"Invalid cursor: keyset arity $count exceeds maximum $max")
+    case class KeysetArityMismatch(expected: Int, actual: Int)
+        extends CursorDecodingError(
+          s"Cursor keyset arity $actual does not match expected $expected for this query"
+        )
     case class StrategyMismatch(expected: Position, actual: Position)
         extends CursorDecodingError(
           s"Cursor strategy mismatch: query expects ${expected.asString}, cursor carries ${actual.asString}"

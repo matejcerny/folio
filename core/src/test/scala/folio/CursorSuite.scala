@@ -80,6 +80,8 @@ object CursorSuite extends SimpleIOSuite:
 
   pureTest("roundtrip for keyset with three values (string, timestamp, long)"):
     val timestamp = java.time.OffsetDateTime.parse("2024-01-15T10:30:00Z")
+    val query =
+      baseQuery.copy(sortBys = ListSet(TestField.Name.ascending, TestField.CreatedAt.ascending, TestField.Id.ascending))
     val decoded = DecodedCursor(
       Direction.Forward,
       Position.Keyset(
@@ -90,8 +92,8 @@ object CursorSuite extends SimpleIOSuite:
         )
       )
     )
-    val cursor = Cursor.encode(decoded, baseQuery)
-    val roundtrip = Cursor.decode(cursor, baseQuery)
+    val cursor = Cursor.encode(decoded, query)
+    val roundtrip = Cursor.decode(cursor, query)
 
     expect.sameR(decoded, roundtrip)
 
@@ -397,6 +399,63 @@ object CursorSuite extends SimpleIOSuite:
     val roundtrip = Cursor.decode(cursor, query)
 
     expect.sameL(CursorDecodingError.AbsentInRequiredField("name"), roundtrip)
+
+  pureTest("decode rejects keyset cursor with too few values via KeysetArityMismatch"):
+    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Name.ascending))
+    val decoded =
+      DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.LongV(7L))))
+    val cursor = Cursor.encode(decoded, query)
+    val roundtrip = Cursor.decode(cursor, query)
+
+    expect.sameL(CursorDecodingError.KeysetArityMismatch(expected = 2, actual = 1), roundtrip)
+
+  pureTest("decode rejects keyset cursor with too many values via KeysetArityMismatch"):
+    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Name.ascending))
+    val decoded =
+      DecodedCursor(
+        Direction.Forward,
+        Position.Keyset(List(KeysetValue.StringV("alice"), KeysetValue.LongV(7L), KeysetValue.LongV(99L)))
+      )
+    val cursor = Cursor.encode(decoded, query)
+    val roundtrip = Cursor.decode(cursor, query)
+
+    expect.sameL(CursorDecodingError.KeysetArityMismatch(expected = 2, actual = 3), roundtrip)
+
+  pureTest("decode accepts empty keyset cursor (first-page) regardless of expected arity"):
+    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Name.ascending))
+    val decoded = DecodedCursor(Direction.Forward, Position.Keyset(Nil))
+    val cursor = Cursor.encode(decoded, query)
+    val roundtrip = Cursor.decode(cursor, query)
+
+    expect.sameR(decoded, roundtrip)
+
+  pureTest("decode surfaces KeysetArityMismatch before AbsentInRequiredField when both would fire"):
+    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Name.ascending))
+    val decoded =
+      DecodedCursor(
+        Direction.Forward,
+        Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(7L), KeysetValue.LongV(99L)))
+      )
+    val cursor = Cursor.encode(decoded, query)
+    val roundtrip = Cursor.decode(cursor, query)
+
+    expect.sameL(CursorDecodingError.KeysetArityMismatch(expected = 2, actual = 3), roundtrip)
+
+  pureTest("decode succeeds when two FIELD cases share the same column name as the id field"):
+    given FieldSchema[AliasField] = FieldSchema.fromMapping:
+      case AliasField.Id      => "id"
+      case AliasField.IdAlias => "id"
+      case AliasField.Other   => "other"
+
+    given KeysetField[AliasField, Row] = KeysetField.uniqueBy(AliasField.Id, (row: Row) => row.id)
+
+    val query = Query.empty[AliasField].copy(sortBys = ListSet(AliasField.IdAlias.ascending))
+    val decoded =
+      DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.LongV(7L), KeysetValue.LongV(42L))))
+    val cursor = Cursor.encode(decoded, query)
+    val roundtrip = Cursor.decode(cursor, query)
+
+    expect.sameR(decoded, roundtrip)
 
   pureTest("toggling a field from required to absentable produces a different fingerprint (StaleCursor)"):
     val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.LastSeen.ascending))

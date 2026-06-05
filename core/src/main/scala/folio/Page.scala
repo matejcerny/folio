@@ -54,7 +54,7 @@ object Page:
           Position.Offset.First,
           ListSet.empty[SortBy[FIELD]],
           Cursor.fingerprintFor(query, Set.empty),
-          Cursor.KeysetMetadata.empty
+          Cursor.KeysetMetadata.empty[FIELD]
         )
 
   private def paginate[F[_]: Applicative, T, FIELD: FieldSchema](
@@ -64,7 +64,7 @@ object Page:
       firstPosition: Position,
       defaultSortBys: ListSet[SortBy[FIELD]],
       fingerprint: Int,
-      keysetMetadata: Cursor.KeysetMetadata
+      keysetMetadata: Cursor.KeysetMetadata[FIELD]
   )(using CursorCodec): F[Either[CursorDecodingError, Page[T]]] =
     val currentDecodedCursor =
       query.cursor

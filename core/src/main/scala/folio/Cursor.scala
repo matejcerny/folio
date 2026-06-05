@@ -47,19 +47,19 @@ object Cursor:
   ): Int =
     hash(query, absentableFieldNames.toList.sorted.mkString(","))
 
-  /** Build the field-name metadata needed to decode and validate cursors from a resolved [[KeysetField]]. */
+  /** Build the field metadata needed to decode and validate cursors from a resolved [[KeysetField]]. */
   private[folio] def keysetMetadataFor[FIELD: FieldSchema](
       keysetField: KeysetField[FIELD, ?]
-  ): KeysetMetadata =
-    KeysetMetadata(Some(keysetField.field.name), keysetField.absentableFields.map(_.name))
+  ): KeysetMetadata[FIELD] =
+    KeysetMetadata(Some(keysetField.field), keysetField.absentableFields)
 
-  private[folio] case class KeysetMetadata(
-      uniqueFieldName: Option[String],
-      absentableFieldNames: Set[String]
+  private[folio] case class KeysetMetadata[FIELD](
+      uniqueField: Option[FIELD],
+      absentableFields: Set[FIELD]
   )
 
   private[folio] object KeysetMetadata:
-    val empty: KeysetMetadata = KeysetMetadata(None, Set.empty)
+    def empty[FIELD]: KeysetMetadata[FIELD] = KeysetMetadata(None, Set.empty)
 
   private[folio] def encodeWithFingerprint(decoded: DecodedCursor, fingerprint: Int)(using
       codec: CursorCodec
@@ -71,10 +71,13 @@ object Cursor:
       cursor: Cursor,
       query: Query[FIELD],
       fingerprint: Int,
-      metadata: KeysetMetadata
+      metadata: KeysetMetadata[FIELD]
   )(using codec: CursorCodec): Either[CursorDecodingError, DecodedCursor] =
     decodeBytes(cursor, fingerprint).flatMap: decoded =>
-      validateAbsentSlots(decoded, query, metadata).map(_ => decoded)
+      for
+        _ <- validateKeysetArity(decoded, query, metadata)
+        _ <- validateAbsentSlots(decoded, query, metadata)
+      yield decoded
 
   private def decodeBytes(cursor: Cursor, fingerprint: Int)(using
       codec: CursorCodec
@@ -95,22 +98,42 @@ object Cursor:
       _ <- requireExhausted
     yield DecodedCursor(decodeDirection(flags), position)
 
-  private def validateAbsentSlots[FIELD: FieldSchema](
+  private def expectedCursorFields[FIELD](
+      query: Query[FIELD],
+      metadata: KeysetMetadata[FIELD]
+  ): List[FIELD] =
+    val sortFields = query.sortBys.toList.map(_.field)
+    metadata.uniqueField match
+      case Some(uniqueField) if !sortFields.contains(uniqueField) => sortFields :+ uniqueField
+      case _                                                      => sortFields
+
+  private def validateKeysetArity[FIELD: FieldSchema](
       decoded: DecodedCursor,
       query: Query[FIELD],
-      metadata: KeysetMetadata
+      metadata: KeysetMetadata[FIELD]
   ): Either[CursorDecodingError, Unit] =
     decoded.position match
       case Position.Keyset(values) if values.nonEmpty =>
-        val sortFieldNames = query.sortBys.toList.map(_.field.name)
-        val cursorFieldNames = metadata.uniqueFieldName match
-          case Some(uniqueName) if !sortFieldNames.contains(uniqueName) => sortFieldNames :+ uniqueName
-          case _                                                        => sortFieldNames
-        cursorFieldNames
+        val expected = expectedCursorFields(query, metadata).size
+        Either.cond(
+          values.sizeIs == expected,
+          (),
+          CursorDecodingError.KeysetArityMismatch(expected = expected, actual = values.size)
+        )
+      case _ => Right(())
+
+  private def validateAbsentSlots[FIELD: FieldSchema](
+      decoded: DecodedCursor,
+      query: Query[FIELD],
+      metadata: KeysetMetadata[FIELD]
+  ): Either[CursorDecodingError, Unit] =
+    decoded.position match
+      case Position.Keyset(values) if values.nonEmpty =>
+        expectedCursorFields(query, metadata)
           .zip(values)
           .collectFirst:
-            case (fieldName, KeysetValue.Absent) if !metadata.absentableFieldNames.contains(fieldName) =>
-              CursorDecodingError.AbsentInRequiredField(fieldName)
+            case (field, KeysetValue.Absent) if !metadata.absentableFields.contains(field) =>
+              CursorDecodingError.AbsentInRequiredField(field.name)
           .toLeft(())
       case _ => Right(())
 
@@ -192,10 +215,10 @@ object Cursor:
       case keysetField: KeysetField[FIELD, ?] => fingerprintFor(query, keysetField.absentableFields.map(_.name))
       case _                                  => fingerprintFor(query, Set.empty)
 
-  private inline def summonKeysetMetadata[FIELD: FieldSchema]: KeysetMetadata =
+  private inline def summonKeysetMetadata[FIELD: FieldSchema]: KeysetMetadata[FIELD] =
     summonFrom:
       case keysetField: KeysetField[FIELD, ?] => keysetMetadataFor(keysetField)
-      case _                                  => KeysetMetadata.empty
+      case _                                  => KeysetMetadata.empty[FIELD]
 
 extension (cursor: Cursor)
   inline def decode[FIELD: FieldSchema](query: Query[FIELD])(using

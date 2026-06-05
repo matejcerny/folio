@@ -48,7 +48,7 @@ object CursorCodecSuite extends SimpleIOSuite:
 
   pureTest("roundtrip preserves cursor position with Long.MaxValue"):
     val decoded = DecodedCursor(Direction.Backward, keysetOf(Long.MaxValue))
-    val query = TestFixtures.fullyPopulatedQuery
+    val query = Query.empty[TestField]
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 

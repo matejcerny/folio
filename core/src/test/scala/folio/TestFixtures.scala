@@ -8,6 +8,9 @@ enum TestField derives FieldSchema.SnakeCase:
 enum TestFieldNoId derives FieldSchema.SnakeCase:
   case Timestamp, Source
 
+enum AliasField:
+  case Id, IdAlias, Other
+
 case class Row(id: Long, name: String, createdAt: String, description: String, lastSeen: Option[String])
 
 case class EventRow(timestamp: String, source: String)
