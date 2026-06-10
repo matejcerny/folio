@@ -1,0 +1,11 @@
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: folio
+      POSTGRES_PASSWORD: folio
+      POSTGRES_DB: folio
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./it/sql/init.sql:/docker-entrypoint-initdb.d/init.sql
