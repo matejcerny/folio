@@ -18,6 +18,8 @@ object Cursor:
   private val flagPositionKeyset: Byte = 0x02
   private val flagReservedMask: Byte = 0xfc.toByte
 
+  extension (flags: Byte) private def isSet(mask: Byte): Boolean = (flags & mask) != 0
+
   private val tagIntV: Byte = 0x01
   private val tagLongV: Byte = 0x02
   private val tagStringV: Byte = 0x03
@@ -89,11 +91,14 @@ object Cursor:
 
   private def decodeProgram(fingerprint: Int): Read[DecodedCursor] =
     for
-      flags <- readByte("flags")
-      _ <- Either.cond((flags & flagReservedMask) == 0, (), CursorDecodingError.MalformedFlags(flags)).liftRead
+      flags <- readByte
+      _ <-
+        Either
+          .cond(!flags.isSet(flagReservedMask), (), CursorDecodingError.MalformedCursor("reserved flag bits set"))
+          .liftRead
       hashValue <- readHash
       _ <- Either.cond(hashValue == fingerprint, (), CursorDecodingError.StaleCursor).liftRead
-      isKeyset = (flags & flagPositionKeyset) != 0
+      isKeyset = flags.isSet(flagPositionKeyset)
       position <- if isKeyset then readKeysetPosition else readOffsetPosition
       _ <- requireExhausted
     yield DecodedCursor(decodeDirection(flags), position)
@@ -118,7 +123,7 @@ object Cursor:
         Either.cond(
           values.sizeIs == expected,
           (),
-          CursorDecodingError.KeysetArityMismatch(expected = expected, actual = values.size)
+          CursorDecodingError.IncompatibleCursor("keyset arity does not match query")
         )
       case _ => Right(())
 
@@ -133,7 +138,9 @@ object Cursor:
           .zip(values)
           .collectFirst:
             case (field, KeysetValue.Absent) if !metadata.absentableFields.contains(field) =>
-              CursorDecodingError.AbsentInRequiredField(field.name)
+              CursorDecodingError.IncompatibleCursor(
+                s"anchor has Absent value in non-absentable field '${field.name}'"
+              )
           .toLeft(())
       case _ => Right(())
 
@@ -149,7 +156,7 @@ object Cursor:
     (directionBit | positionBit).toByte
 
   private def decodeDirection(flags: Byte): Direction =
-    if (flags & flagDirection) != 0 then Direction.Backward else Direction.Forward
+    if flags.isSet(flagDirection) then Direction.Backward else Direction.Forward
 
   private def keysetValueBytes(value: KeysetValue): Chain[Byte] = value match
     case KeysetValue.IntV(intValue)             => byte(tagIntV) ++ intBytes(intValue)
@@ -159,13 +166,13 @@ object Cursor:
     case KeysetValue.Absent                     => byte(tagAbsent)
 
   private val readKeysetValue: Read[KeysetValue] =
-    readByte("keyset tag").flatMap:
-      case `tagIntV`       => readInt("IntV value").map(KeysetValue.IntV.apply)
-      case `tagLongV`      => readLong("LongV value").map(KeysetValue.LongV.apply)
-      case `tagStringV`    => readString("StringV").map(KeysetValue.StringV.apply)
-      case `tagTimestampV` => readTimestamp("TimestampV").map(KeysetValue.TimestampV.apply)
+    readByte.flatMap:
+      case `tagIntV`       => readInt.map(KeysetValue.IntV.apply)
+      case `tagLongV`      => readLong.map(KeysetValue.LongV.apply)
+      case `tagStringV`    => readString.map(KeysetValue.StringV.apply)
+      case `tagTimestampV` => readTimestamp.map(KeysetValue.TimestampV.apply)
       case `tagAbsent`     => Right(KeysetValue.Absent: KeysetValue).liftRead
-      case other           => Left(CursorDecodingError.UnknownKeysetTag(other)).liftRead
+      case _               => Left(CursorDecodingError.MalformedCursor("unknown keyset value type")).liftRead
 
   private def readKeysetValues(count: Int): Read[List[KeysetValue]] =
     List.fill(count)(readKeysetValue).sequence
@@ -177,16 +184,16 @@ object Cursor:
         Chain.fromSeq(keysetValues).flatMap(keysetValueBytes)
 
   private val readOffsetPosition: Read[Position] =
-    readUnsignedVarint("offset").flatMap: value =>
-      Position.Offset(value).leftMap(_ => CursorDecodingError.MalformedOffset(value)).liftRead
+    readUnsignedVarint.flatMap: value =>
+      Position.Offset(value).leftMap(_ => CursorDecodingError.MalformedCursor("negative offset")).liftRead
 
   private val readKeysetPosition: Read[Position] =
-    readUnsignedVarint("keyset count").flatMap: count =>
+    readUnsignedVarint.flatMap: count =>
       Either
         .cond(
           count >= 0L && count <= maxKeysetArity.toLong,
           count.toInt,
-          CursorDecodingError.KeysetArityExceeded(count, maxKeysetArity)
+          CursorDecodingError.MalformedCursor("keyset arity exceeds limit")
         )
         .liftRead
         .flatMap(readKeysetValues(_).map(Position.Keyset.apply))

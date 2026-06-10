@@ -38,13 +38,12 @@ object CursorCodecSuite extends SimpleIOSuite:
     expect(clue(base64UrlPattern.findFirstIn(cursor.value)).isDefined) and
       expect(!clue(cursor.value).contains("="))
 
-  pureTest("real codec decode returns InvalidBase64 for invalid input"):
+  pureTest("real codec decode rejects invalid base64 input"):
     val invalidCursor = Cursor("not valid base64 because of spaces")
 
     val result = realCodec.decode(invalidCursor)
 
-    expect(clue(result).isLeft) and
-      expect(clue(result).left.exists(_.isInstanceOf[FolioError.CursorDecodingError.InvalidBase64]))
+    expect.sameL(FolioError.CursorDecodingError.MalformedCursor("not valid base64"), result)
 
   pureTest("roundtrip preserves cursor position with Long.MaxValue"):
     val decoded = DecodedCursor(Direction.Backward, keysetOf(Long.MaxValue))

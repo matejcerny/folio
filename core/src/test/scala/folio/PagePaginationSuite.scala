@@ -489,25 +489,25 @@ object PagePaginationSuite extends SimpleIOSuite:
     val current = DecodedCursor(Direction.Forward, keysetPosition)
     val query = queryWithCurrent(offsetQuery, current)
     val result = Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected"))
-    expect.sameL(CursorDecodingError.StrategyMismatch(Position.Offset.First, keysetPosition), result)
+    expect.sameL(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"), result)
 
   pureTest("mismatch: keyset cursor against offset-only query (no KeysetField) is rejected"):
     val current = DecodedCursor(Direction.Forward, keysetOf(5L))
     val query = queryWithCurrent(offsetOnlyQuery, current)
     val result = Page.withPagination[Id, EventRow, TestFieldNoId](query, _ => sys.error("fetch not expected"))
-    expect.sameL(CursorDecodingError.StrategyMismatch(Position.Offset.First, keysetOf(5L)), result)
+    expect.sameL(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"), result)
 
   pureTest("mismatch: offset cursor against keyset query (id sort) is rejected"):
     val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(10L))
     val query = queryWithCurrent(keysetQuery, current)
     val result = Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected"))
-    expect.sameL(CursorDecodingError.StrategyMismatch(Position.Keyset.First, Position.Offset.unsafe(10L)), result)
+    expect.sameL(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"), result)
 
   pureTest("mismatch: offset cursor against no-sort keyset default is rejected"):
     val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(10L))
     val query = queryWithCurrent(TestFixtures.emptyQueryWithId.copy(limit = limit), current)
     val result = Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected"))
-    expect.sameL(CursorDecodingError.StrategyMismatch(Position.Keyset.First, Position.Offset.unsafe(10L)), result)
+    expect.sameL(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"), result)
 
   // ---------- non-id keyset (multi-field cursor) ----------
 

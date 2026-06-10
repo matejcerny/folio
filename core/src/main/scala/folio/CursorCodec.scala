@@ -17,4 +17,4 @@ object CursorCodec:
 
     def decode(cursor: Cursor): Either[CursorDecodingError, Array[Byte]] =
       Try(Base64.getUrlDecoder.decode(cursor.value)).toEither
-        .leftMap(_ => CursorDecodingError.InvalidBase64(cursor.value))
+        .leftMap(_ => CursorDecodingError.MalformedCursor("not valid base64"))

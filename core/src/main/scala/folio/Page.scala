@@ -75,8 +75,7 @@ object Page:
               (firstPosition, decoded.position) match
                 case (_: Position.Keyset, _: Position.Keyset) => Right(decoded)
                 case (_: Position.Offset, _: Position.Offset) => Right(decoded)
-                case _                                        =>
-                  Left(CursorDecodingError.StrategyMismatch(expected = firstPosition, actual = decoded.position))
+                case _ => Left(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"))
         .getOrElse(Right(DecodedCursor(Direction.Forward, firstPosition)))
 
     currentDecodedCursor.traverse: current =>

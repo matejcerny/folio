@@ -65,66 +65,67 @@ object CursorBytesSuite extends SimpleIOSuite with Checkers:
 
   test("unsignedVarint round-trips via readUnsignedVarint"):
     forall(Gen.choose(0L, Long.MaxValue)): value =>
-      expect.sameR(value, runRead(unsignedVarint(value))(readUnsignedVarint("test")))
+      expect.sameR(value, runRead(unsignedVarint(value))(readUnsignedVarint))
 
   // --- intBytes / readInt ---
 
   test("intBytes round-trips via readInt"):
     forall(Gen.choose(Int.MinValue, Int.MaxValue)): value =>
-      expect.sameR(value, runRead(intBytes(value))(readInt("test")))
+      expect.sameR(value, runRead(intBytes(value))(readInt))
 
-  pureTest("readInt rejects zigzag-decoded value above Int.MaxValue with IntOutOfRange"):
+  pureTest("readInt rejects zigzag-decoded value above Int.MaxValue"):
     val outOfRange = Int.MaxValue.toLong + 1L
     val bytes = unsignedVarint(zigzagEncode(outOfRange))
-    expect.sameL(CursorDecodingError.IntOutOfRange("test", outOfRange), runRead(bytes)(readInt("test")))
+    expect.sameL(CursorDecodingError.MalformedCursor("integer out of range"), runRead(bytes)(readInt))
 
-  pureTest("readInt rejects zigzag-decoded value below Int.MinValue with IntOutOfRange"):
+  pureTest("readInt rejects zigzag-decoded value below Int.MinValue"):
     val outOfRange = Int.MinValue.toLong - 1L
     val bytes = unsignedVarint(zigzagEncode(outOfRange))
-    expect.sameL(CursorDecodingError.IntOutOfRange("test", outOfRange), runRead(bytes)(readInt("test")))
+    expect.sameL(CursorDecodingError.MalformedCursor("integer out of range"), runRead(bytes)(readInt))
 
   // --- longBytes / readLong ---
 
   test("longBytes round-trips via readLong"):
     forall(Gen.choose(Long.MinValue, Long.MaxValue)): value =>
-      expect.sameR(value, runRead(longBytes(value))(readLong("test")))
+      expect.sameR(value, runRead(longBytes(value))(readLong))
 
   // --- stringBytes / readString ---
 
   test("stringBytes round-trips via readString"):
     forall(Gen.asciiPrintableStr): value =>
-      expect.sameR(value, runRead(stringBytes(value))(readString("test")))
+      expect.sameR(value, runRead(stringBytes(value))(readString))
 
-  pureTest("readString rejects length above Int.MaxValue with MalformedStringLength"):
+  pureTest("readString rejects length above Int.MaxValue"):
     val tooLarge = Int.MaxValue.toLong + 1L
     expect.sameL(
-      CursorDecodingError.MalformedStringLength("test", tooLarge),
-      runRead(unsignedVarint(tooLarge) ++ Chain.fromSeq("abc".getBytes("UTF-8").toSeq))(readString("test"))
+      CursorDecodingError.MalformedCursor("invalid string length"),
+      runRead(unsignedVarint(tooLarge) ++ Chain.fromSeq("abc".getBytes("UTF-8").toSeq))(readString)
     )
 
-  pureTest("readString accepts length exactly Int.MaxValue but propagates Truncated when buffer is short"):
+  pureTest("readString accepts length exactly Int.MaxValue but reports truncation when buffer is short"):
     val payload = unsignedVarint(Int.MaxValue.toLong) ++ Chain.fromSeq("abc".getBytes("UTF-8").toSeq)
-    expect.sameL(CursorDecodingError.Truncated("test bytes"), runRead(payload)(readString("test")))
+    expect.sameL(CursorDecodingError.MalformedCursor("truncated"), runRead(payload)(readString))
 
-  pureTest("readString rejects negative-Long varint length with MalformedStringLength"):
+  pureTest("readString rejects negative-Long varint length"):
     // 10 bytes whose varint decodes to a negative Long
     val negativeVarint = Chain.fromSeq((Array.fill(9)(0xff.toByte) :+ 0x01.toByte).toSeq)
-    runRead(negativeVarint)(readString("test")) match
-      case Left(CursorDecodingError.MalformedStringLength("test", length)) if length < 0L => success
-      case other => failure(s"expected MalformedStringLength with negative length, got $other")
+    expect.sameL(
+      CursorDecodingError.MalformedCursor("invalid string length"),
+      runRead(negativeVarint)(readString)
+    )
 
   pureTest("readBytes rejects Int.MaxValue count from a non-zero index without overflowing"):
     // Buffer of 8 bytes; advance index by 1 then attempt to read Int.MaxValue.
     // Old check: state.index + count = 1 + Int.MaxValue overflows to Int.MinValue, passes <= 8.
     // New check: count <= state.bytes.length - state.index → Int.MaxValue <= 7 → false.
     val state = ReaderState(Array.fill(8)(0x00.toByte), index = 1)
-    expect.sameL(CursorDecodingError.Truncated("payload"), readBytes(Int.MaxValue, "payload").runA(state))
+    expect.sameL(CursorDecodingError.MalformedCursor("truncated"), readBytes(Int.MaxValue).runA(state))
 
   // --- timestampBytes / readTimestamp ---
 
   test("timestampBytes round-trips via readTimestamp"):
     forall(validTimestamp): timestamp =>
-      expect.sameR(timestamp, runRead(timestampBytes(timestamp))(readTimestamp("test")))
+      expect.sameR(timestamp, runRead(timestampBytes(timestamp))(readTimestamp))
 
   pureTest("readTimestamp accepts boundary nano = 999_999_999 and offset = ±18 * 3600"):
     val maxOffsetSeconds = 18 * 3600
@@ -132,36 +133,37 @@ object CursorBytesSuite extends SimpleIOSuite with Checkers:
       OffsetDateTime.of(2024, 1, 15, 10, 30, 0, 999_999_999, ZoneOffset.ofTotalSeconds(maxOffsetSeconds)),
       OffsetDateTime.of(2024, 1, 15, 10, 30, 0, 999_999_999, ZoneOffset.ofTotalSeconds(-maxOffsetSeconds))
     ).map: timestamp =>
-      expect.sameR(timestamp, runRead(timestampBytes(timestamp))(readTimestamp("test")))
+      expect.sameR(timestamp, runRead(timestampBytes(timestamp))(readTimestamp))
     .combineAll
 
-  pureTest("readTimestamp rejects nano = 1_000_000_000 with MalformedTimestampField"):
+  pureTest("readTimestamp rejects nano = 1_000_000_000"):
     // epochSecond=0, nano=1_000_000_000 (one above legal max), offsetSeconds=0
     val bytes = longBytes(0L) ++ unsignedVarint(1_000_000_000L) ++ longBytes(0L)
     expect.sameL(
-      CursorDecodingError.MalformedTimestampField("test nano", 1_000_000_000L),
-      runRead(bytes)(readTimestamp("test"))
+      CursorDecodingError.MalformedCursor("invalid timestamp field"),
+      runRead(bytes)(readTimestamp)
     )
 
-  pureTest("readTimestamp rejects offsetSeconds above 18 * 3600 with MalformedTimestampField"):
+  pureTest("readTimestamp rejects offsetSeconds above 18 * 3600"):
     val tooLarge = 18L * 3600 + 1
     val bytes = longBytes(0L) ++ unsignedVarint(0L) ++ longBytes(tooLarge)
     expect.sameL(
-      CursorDecodingError.MalformedTimestampField("test offset-seconds", tooLarge),
-      runRead(bytes)(readTimestamp("test"))
+      CursorDecodingError.MalformedCursor("invalid timestamp field"),
+      runRead(bytes)(readTimestamp)
     )
 
-  pureTest("readTimestamp rejects offsetSeconds below -18 * 3600 with MalformedTimestampField"):
+  pureTest("readTimestamp rejects offsetSeconds below -18 * 3600"):
     val tooSmall = -18L * 3600 - 1
     val bytes = longBytes(0L) ++ unsignedVarint(0L) ++ longBytes(tooSmall)
     expect.sameL(
-      CursorDecodingError.MalformedTimestampField("test offset-seconds", tooSmall),
-      runRead(bytes)(readTimestamp("test"))
+      CursorDecodingError.MalformedCursor("invalid timestamp field"),
+      runRead(bytes)(readTimestamp)
     )
 
-  pureTest("readTimestamp returns MalformedTimestamp when epoch second exceeds Instant bounds"):
+  pureTest("readTimestamp rejects epoch second exceeding Instant bounds"):
     // epochSecond = Long.MaxValue is far above Instant.MAX (31556889864403199), so OffsetDateTime.ofInstant throws.
     val bytes = longBytes(Long.MaxValue) ++ unsignedVarint(0L) ++ longBytes(0L)
-    runRead(bytes)(readTimestamp("test")) match
-      case Left(_: CursorDecodingError.MalformedTimestamp) => success
-      case other                                           => failure(s"expected MalformedTimestamp, got $other")
+    expect.sameL(
+      CursorDecodingError.MalformedCursor("malformed timestamp"),
+      runRead(bytes)(readTimestamp)
+    )

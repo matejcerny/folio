@@ -39,38 +39,38 @@ private[folio] object CursorBytes:
 
   def intBytes(value: Int): Chain[Byte] = unsignedVarint(zigzagEncode(value.toLong))
 
-  def readInt(stage: String): Read[Int] =
-    readUnsignedVarint(stage).flatMap: encoded =>
+  def readInt: Read[Int] =
+    readUnsignedVarint.flatMap: encoded =>
       val decoded = zigzagDecode(encoded)
       Either
         .cond(
           decoded >= Int.MinValue.toLong && decoded <= Int.MaxValue.toLong,
           decoded.toInt,
-          CursorDecodingError.IntOutOfRange(stage, decoded)
+          CursorDecodingError.MalformedCursor("integer out of range")
         )
         .liftRead
 
   def longBytes(value: Long): Chain[Byte] = unsignedVarint(zigzagEncode(value))
 
-  def readLong(stage: String): Read[Long] =
-    readUnsignedVarint(stage).map(zigzagDecode)
+  def readLong: Read[Long] =
+    readUnsignedVarint.map(zigzagDecode)
 
   def stringBytes(value: String): Chain[Byte] =
     val utf8 = value.getBytes(StandardCharsets.UTF_8)
     unsignedVarint(utf8.length.toLong) ++ Chain.fromSeq(utf8.toSeq)
 
-  def readString(stage: String): Read[String] =
+  def readString: Read[String] =
     for
-      lengthLong <- readUnsignedVarint(s"$stage length")
-      length <- narrowStringLength(lengthLong, stage).liftRead
-      bytes <- readBytes(length, s"$stage bytes")
+      lengthLong <- readUnsignedVarint
+      length <- narrowStringLength(lengthLong).liftRead
+      bytes <- readBytes(length)
     yield String(bytes, StandardCharsets.UTF_8)
 
-  private def narrowStringLength(length: Long, stage: String): Either[CursorDecodingError, Int] =
+  private def narrowStringLength(length: Long): Either[CursorDecodingError, Int] =
     Either.cond(
       length >= 0L && length <= Int.MaxValue.toLong,
       length.toInt,
-      CursorDecodingError.MalformedStringLength(stage, length)
+      CursorDecodingError.MalformedCursor("invalid string length")
     )
 
   def timestampBytes(value: OffsetDateTime): Chain[Byte] =
@@ -78,31 +78,31 @@ private[folio] object CursorBytes:
       unsignedVarint(value.getNano.toLong) ++
       longBytes(value.getOffset.getTotalSeconds.toLong)
 
-  def readTimestamp(stage: String): Read[OffsetDateTime] =
+  def readTimestamp: Read[OffsetDateTime] =
     for
-      epochSecond <- readLong(s"$stage epoch-second")
-      nano <- readNano(s"$stage nano")
-      offsetSeconds <- readOffsetSeconds(s"$stage offset-seconds")
+      epochSecond <- readLong
+      nano <- readNano
+      offsetSeconds <- readOffsetSeconds
       value <- buildTimestamp(epochSecond, nano, offsetSeconds).liftRead
     yield value
 
-  private def readNano(stage: String): Read[Int] =
-    readUnsignedVarint(stage).flatMap: nano =>
+  private def readNano: Read[Int] =
+    readUnsignedVarint.flatMap: nano =>
       Either
         .cond(
           nano >= 0L && nano <= 999_999_999L,
           nano.toInt,
-          CursorDecodingError.MalformedTimestampField(stage, nano)
+          CursorDecodingError.MalformedCursor("invalid timestamp field")
         )
         .liftRead
 
-  private def readOffsetSeconds(stage: String): Read[Int] =
-    readLong(stage).flatMap: offset =>
+  private def readOffsetSeconds: Read[Int] =
+    readLong.flatMap: offset =>
       Either
         .cond(
           offset >= -18L * 3600 && offset <= 18L * 3600,
           offset.toInt,
-          CursorDecodingError.MalformedTimestampField(stage, offset)
+          CursorDecodingError.MalformedCursor("invalid timestamp field")
         )
         .liftRead
 
@@ -115,31 +115,31 @@ private[folio] object CursorBytes:
       OffsetDateTime
         .ofInstant(Instant.ofEpochSecond(epochSecond, nano.toLong), ZoneOffset.ofTotalSeconds(offsetSeconds))
     ).toEither
-      .leftMap(error => CursorDecodingError.MalformedTimestamp(error.getMessage))
+      .leftMap(_ => CursorDecodingError.MalformedCursor("malformed timestamp"))
 
-  def readByte(stage: String): Read[Byte] =
+  def readByte: Read[Byte] =
     StateT: state =>
       Either.cond(
         state.index < state.bytes.length,
         (state.copy(index = state.index + 1), state.bytes(state.index)),
-        CursorDecodingError.Truncated(stage)
+        CursorDecodingError.MalformedCursor("truncated")
       )
 
-  def readBytes(count: Int, stage: String): Read[Array[Byte]] =
+  def readBytes(count: Int): Read[Array[Byte]] =
     StateT: state =>
       Either.cond(
         count >= 0 && count <= state.bytes.length - state.index,
         (state.copy(index = state.index + count), state.bytes.slice(state.index, state.index + count)),
-        CursorDecodingError.Truncated(stage)
+        CursorDecodingError.MalformedCursor("truncated")
       )
 
-  val readHash: Read[Int] =
-    readBytes(4, "fingerprint").map: hashBytes =>
+  def readHash: Read[Int] =
+    readBytes(4).map: hashBytes =>
       ((hashBytes(0) & 0xff) << 24) | ((hashBytes(1) & 0xff) << 16) | ((hashBytes(2) & 0xff) << 8) | (hashBytes(
         3
       ) & 0xff)
 
-  def readUnsignedVarint(stage: String): Read[Long] =
+  def readUnsignedVarint: Read[Long] =
     StateT: initialState =>
       @tailrec def loop(
           state: ReaderState,
@@ -147,8 +147,8 @@ private[folio] object CursorBytes:
           acc: Long,
           byteCount: Int
       ): Either[CursorDecodingError, (ReaderState, Long)] =
-        if byteCount >= 10 then Left(CursorDecodingError.MalformedVarint)
-        else if state.index >= state.bytes.length then Left(CursorDecodingError.Truncated(stage))
+        if byteCount >= 10 then Left(CursorDecodingError.MalformedCursor("malformed varint"))
+        else if state.index >= state.bytes.length then Left(CursorDecodingError.MalformedCursor("truncated"))
         else
           val nextByte = state.bytes(state.index)
           val advanced = state.copy(index = state.index + 1)
@@ -157,7 +157,7 @@ private[folio] object CursorBytes:
           else loop(advanced, shift + 7, updated, byteCount + 1)
       loop(initialState, 0, 0L, 0)
 
-  val requireExhausted: Read[Unit] =
+  def requireExhausted: Read[Unit] =
     StateT: state =>
       val remaining = state.bytes.length - state.index
-      Either.cond(remaining == 0, (state, ()), CursorDecodingError.TrailingBytes(remaining))
+      Either.cond(remaining == 0, (state, ()), CursorDecodingError.MalformedCursor("trailing data after parse"))
