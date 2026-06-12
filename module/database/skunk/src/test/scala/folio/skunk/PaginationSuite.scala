@@ -1,1 +1,301 @@
 package folio.skunk
+
+import java.time.OffsetDateTime
+
+import scala.collection.immutable.ListSet
+
+import cats.syntax.foldable.*
+import skunk.AppliedFragment
+import skunk.Void
+import skunk.codec.all.int8
+import skunk.implicits.*
+
+import folio.*
+import weaver.SimpleIOSuite
+
+/** Pure SQL-shape tests for [[Pagination.buildSql]]. No effects, no database — they pin the template text and the
+  * bound-argument types for the direction/Absent-aware keyset algorithm and the offset branch.
+  */
+object PaginationSuite extends SimpleIOSuite:
+
+  enum MessageField derives FieldSchema.SnakeCase:
+    case Id, EnqueuedAt, LastReadAt
+
+  final case class Message(id: Long, enqueuedAt: OffsetDateTime, lastReadAt: Option[OffsetDateTime])
+
+  // EnqueuedAt is registered as required (non-absentable); LastReadAt is absentable (T => Option[V]).
+  given KeysetField[MessageField, Message] =
+    KeysetField
+      .uniqueBy(MessageField.Id, (message: Message) => message.id)
+      .withField(MessageField.EnqueuedAt, (message: Message) => message.enqueuedAt)
+      .withField(MessageField.LastReadAt, (message: Message) => message.lastReadAt)
+
+  // Distinct enum + hand-written schema to exercise identifier quoting/escaping: an ordinary name, a reserved word,
+  // and a name with an embedded double quote. No KeysetField in scope, so these only ever take the offset branch.
+  enum QuoteField:
+    case Plain, Reserved, Weird
+
+  given FieldSchema[QuoteField] = FieldSchema.fromMapping:
+    case QuoteField.Plain    => "plain_col"
+    case QuoteField.Reserved => "order"
+    case QuoteField.Weird    => "a\"b"
+
+  private val select: AppliedFragment = sql"SELECT * FROM messages".apply(Void)
+  private val instant: OffsetDateTime = OffsetDateTime.parse("2024-01-01T00:00:00Z")
+
+  private def resolved(
+      sortBys: ListSet[SortBy[MessageField]],
+      position: Position,
+      direction: Direction = Direction.Forward,
+      limit: Limit = 10.items
+  ): ResolvedQuery[MessageField] =
+    ResolvedQuery(Set.empty, sortBys, limit, position, direction)
+
+  private val messageKeyset: KeysetField[MessageField, Message] = summon
+
+  private def sqlOf(query: ResolvedQuery[MessageField]): String =
+    Pagination.buildSql(query, select, Some(messageKeyset)) match
+      case Right(applied) => applied.fragment.sql
+      case Left(error)    => s"buildSql failed: $error"
+
+  private def typesOf(query: ResolvedQuery[MessageField]): List[String] =
+    Pagination.buildSql(query, select, Some(messageKeyset)) match
+      case Right(applied) => applied.fragment.encoder.types.map(_.name).toList
+      case Left(error)    => List(s"buildSql failed: $error")
+
+  // === Single non-absentable cursor field (sort by id): all four strict-step rows ===
+
+  pureTest("ASC forward: strict `>`, ORDER BY ASC NULLS LAST"):
+    val query = resolved(ListSet(MessageField.Id.ascending), Position.Keyset(List(KeysetValue.LongV(5))))
+    List(
+      expect.same(
+        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" > $1) ORDER BY usersql."id" ASC NULLS LAST LIMIT $2""",
+        sqlOf(query)
+      ),
+      expect.same(List("int8", "int4"), typesOf(query))
+    ).combineAll
+
+  pureTest("DESC forward: strict `<`, ORDER BY DESC NULLS LAST"):
+    val query = resolved(ListSet(MessageField.Id.descending), Position.Keyset(List(KeysetValue.LongV(5))))
+    expect.same(
+      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" < $1) ORDER BY usersql."id" DESC NULLS LAST LIMIT $2""",
+      sqlOf(query)
+    )
+
+  pureTest("ASC backward: strict `<`, ORDER BY DESC NULLS FIRST"):
+    val query =
+      resolved(ListSet(MessageField.Id.ascending), Position.Keyset(List(KeysetValue.LongV(5))), Direction.Backward)
+    expect.same(
+      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" < $1) ORDER BY usersql."id" DESC NULLS FIRST LIMIT $2""",
+      sqlOf(query)
+    )
+
+  pureTest("DESC backward: strict `>`, ORDER BY ASC NULLS FIRST"):
+    val query =
+      resolved(ListSet(MessageField.Id.descending), Position.Keyset(List(KeysetValue.LongV(5))), Direction.Backward)
+    expect.same(
+      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" > $1) ORDER BY usersql."id" ASC NULLS FIRST LIMIT $2""",
+      sqlOf(query)
+    )
+
+  // === Absentable cursor field (sort by last_read_at), present anchor: all four strict-step rows ===
+
+  pureTest("absentable ASC forward present: `> v OR IS NULL`, ORDER BY ASC NULLS LAST, id ASC"):
+    val query = resolved(
+      ListSet(MessageField.LastReadAt.ascending),
+      Position.Keyset(List(KeysetValue.StringV("t"), KeysetValue.LongV(5)))
+    )
+    List(
+      expect.same(
+        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."last_read_at" > $1 OR usersql."last_read_at" IS NULL) OR (usersql."last_read_at" IS NOT DISTINCT FROM $2 AND (usersql."id" > $3)) ORDER BY usersql."last_read_at" ASC NULLS LAST, usersql."id" ASC LIMIT $4""",
+        sqlOf(query)
+      ),
+      expect.same(List("text", "text", "int8", "int4"), typesOf(query))
+    ).combineAll
+
+  pureTest("absentable DESC forward present: `< v OR IS NULL`, ORDER BY DESC NULLS LAST, id ASC"):
+    val query = resolved(
+      ListSet(MessageField.LastReadAt.descending),
+      Position.Keyset(List(KeysetValue.StringV("t"), KeysetValue.LongV(5)))
+    )
+    expect.same(
+      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."last_read_at" < $1 OR usersql."last_read_at" IS NULL) OR (usersql."last_read_at" IS NOT DISTINCT FROM $2 AND (usersql."id" > $3)) ORDER BY usersql."last_read_at" DESC NULLS LAST, usersql."id" ASC LIMIT $4""",
+      sqlOf(query)
+    )
+
+  pureTest("absentable ASC backward present: `< v`, ORDER BY DESC NULLS FIRST, id DESC"):
+    val query = resolved(
+      ListSet(MessageField.LastReadAt.ascending),
+      Position.Keyset(List(KeysetValue.StringV("t"), KeysetValue.LongV(5))),
+      Direction.Backward
+    )
+    expect.same(
+      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."last_read_at" < $1) OR (usersql."last_read_at" IS NOT DISTINCT FROM $2 AND (usersql."id" < $3)) ORDER BY usersql."last_read_at" DESC NULLS FIRST, usersql."id" DESC LIMIT $4""",
+      sqlOf(query)
+    )
+
+  pureTest("absentable DESC backward present: `> v`, ORDER BY ASC NULLS FIRST, id DESC"):
+    val query = resolved(
+      ListSet(MessageField.LastReadAt.descending),
+      Position.Keyset(List(KeysetValue.StringV("t"), KeysetValue.LongV(5))),
+      Direction.Backward
+    )
+    expect.same(
+      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."last_read_at" > $1) OR (usersql."last_read_at" IS NOT DISTINCT FROM $2 AND (usersql."id" < $3)) ORDER BY usersql."last_read_at" ASC NULLS FIRST, usersql."id" DESC LIMIT $4""",
+      sqlOf(query)
+    )
+
+  // === Absentable cursor field, Absent anchor: FALSE forward / IS NOT NULL backward; eq rung becomes IS NOT DISTINCT FROM NULL ===
+
+  pureTest("absentable ASC forward absent: strict collapses to FALSE, no bound param for the absent slot"):
+    val query = resolved(
+      ListSet(MessageField.LastReadAt.ascending),
+      Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5)))
+    )
+    List(
+      expect.same(
+        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (FALSE) OR (usersql."last_read_at" IS NOT DISTINCT FROM NULL AND (usersql."id" > $1)) ORDER BY usersql."last_read_at" ASC NULLS LAST, usersql."id" ASC LIMIT $2""",
+        sqlOf(query)
+      ),
+      expect.same(List("int8", "int4"), typesOf(query))
+    ).combineAll
+
+  pureTest("absentable ASC backward absent: strict becomes IS NOT NULL"):
+    val query = resolved(
+      ListSet(MessageField.LastReadAt.ascending),
+      Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5))),
+      Direction.Backward
+    )
+    expect.same(
+      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."last_read_at" IS NOT NULL) OR (usersql."last_read_at" IS NOT DISTINCT FROM NULL AND (usersql."id" < $1)) ORDER BY usersql."last_read_at" DESC NULLS FIRST, usersql."id" DESC LIMIT $2""",
+      sqlOf(query)
+    )
+
+  // === Equality-rung chaining across multiple sort fields ===
+
+  pureTest("multi sort field: equality rungs chain, id appended last"):
+    val query = resolved(
+      ListSet(MessageField.EnqueuedAt.descending, MessageField.LastReadAt.ascending),
+      Position.Keyset(List(KeysetValue.TimestampV(instant), KeysetValue.StringV("x"), KeysetValue.LongV(5)))
+    )
+    List(
+      expect.same(
+        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."enqueued_at" < $1) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $2 AND (usersql."last_read_at" > $3 OR usersql."last_read_at" IS NULL)) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $4 AND usersql."last_read_at" IS NOT DISTINCT FROM $5 AND (usersql."id" > $6)) ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."last_read_at" ASC NULLS LAST, usersql."id" ASC LIMIT $7""",
+        sqlOf(query)
+      ),
+      expect.same(List("timestamptz", "timestamptz", "text", "timestamptz", "text", "int8", "int4"), typesOf(query))
+    ).combineAll
+
+  // === Appended id appears in ORDER BY when id is not a sort field ===
+
+  pureTest("appended id tiebreaker present in ORDER BY (id not a sort field)"):
+    val query = resolved(
+      ListSet(MessageField.EnqueuedAt.descending),
+      Position.Keyset(List(KeysetValue.TimestampV(instant), KeysetValue.LongV(5)))
+    )
+    expect.same(
+      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."enqueued_at" < $1) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $2 AND (usersql."id" > $3)) ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC LIMIT $4""",
+      sqlOf(query)
+    )
+
+  pureTest("first page (empty anchor): no WHERE, ORDER BY still includes appended id"):
+    val query = resolved(ListSet(MessageField.EnqueuedAt.descending), Position.Keyset.First)
+    List(
+      expect.same(
+        """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC LIMIT $1""",
+        sqlOf(query)
+      ),
+      expect.same(List("int4"), typesOf(query))
+    ).combineAll
+
+  // === Offset branch ===
+
+  pureTest("offset branch: OFFSET $n LIMIT $m, no keyset predicate, forward-orientation ORDER BY"):
+    val query = resolved(ListSet(MessageField.EnqueuedAt.descending), Position.Offset.unsafe(40))
+    List(
+      expect.same(
+        """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."enqueued_at" DESC NULLS LAST OFFSET $1 LIMIT $2""",
+        sqlOf(query)
+      ),
+      expect.same(List("int8", "int4"), typesOf(query))
+    ).combineAll
+
+  // === Keyset value -> codec mapping ===
+
+  pureTest("KeysetValue maps to the hard-coded Skunk codec; Absent binds no parameter"):
+    def bindTypesFor(value: KeysetValue): List[String] =
+      typesOf(resolved(ListSet(MessageField.Id.ascending), Position.Keyset(List(value))))
+    List(
+      expect.same(List("int4", "int4"), bindTypesFor(KeysetValue.IntV(7))),
+      expect.same(List("int8", "int4"), bindTypesFor(KeysetValue.LongV(7))),
+      expect.same(List("text", "int4"), bindTypesFor(KeysetValue.StringV("x"))),
+      expect.same(List("timestamptz", "int4"), bindTypesFor(KeysetValue.TimestampV(instant))),
+      expect.same(List("int4"), bindTypesFor(KeysetValue.Absent))
+    ).combineAll
+
+  // === Identifier quoting / escaping ===
+
+  pureTest("identifiers are double-quoted; embedded quotes doubled; reserved words safe"):
+    val query = ResolvedQuery[QuoteField](
+      Set.empty,
+      ListSet(QuoteField.Plain.ascending, QuoteField.Reserved.ascending, QuoteField.Weird.ascending),
+      10.items,
+      Position.Offset.unsafe(0),
+      Direction.Forward
+    )
+    expect.same(
+      Right(
+        """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."plain_col" ASC NULLS LAST, usersql."order" ASC NULLS LAST, usersql."a""b" ASC NULLS LAST OFFSET $1 LIMIT $2"""
+      ),
+      Pagination.buildSql(query, select, None).map(_.fragment.sql)
+    )
+
+  // === Composition with a parameterized user SELECT ===
+
+  pureTest("parameterized user SELECT: its parameters precede folio's, placeholders renumber"):
+    val paramSelect = sql"SELECT * FROM messages WHERE tenant = $int8".apply(99L)
+    val applied = Pagination.buildSql(
+      resolved(ListSet(MessageField.Id.ascending), Position.Keyset(List(KeysetValue.LongV(5)))),
+      paramSelect,
+      Some(messageKeyset)
+    )
+    List(
+      expect.same(
+        Right(
+          """SELECT * FROM (SELECT * FROM messages WHERE tenant = $1) AS usersql WHERE (usersql."id" > $2) ORDER BY usersql."id" ASC NULLS LAST LIMIT $3"""
+        ),
+        applied.map(_.fragment.sql)
+      ),
+      expect.same(Right(List("int8", "int8", "int4")), applied.map(_.fragment.encoder.types.map(_.name).toList))
+    ).combineAll
+
+  // === Contract: a keyset position requires the KeysetField metadata ===
+
+  pureTest("Position.Keyset paired with keyset = None returns Left, never truncated SQL"):
+    val query = resolved(ListSet(MessageField.Id.ascending), Position.Keyset(List(KeysetValue.LongV(5))))
+    expect.same(
+      Left("Position.Keyset requires Some(keysetField); pass the KeysetField used to resolve the query"),
+      Pagination.buildSql(query, select, None).map(_.fragment.sql)
+    )
+
+  pureTest("keyset anchor with too few values (missing id tiebreaker) returns Left, never truncated SQL"):
+    // sort by EnqueuedAt -> cursor fields [EnqueuedAt, id]; a single-value anchor would drop the id tiebreaker rung.
+    val query = resolved(
+      ListSet(MessageField.EnqueuedAt.ascending),
+      Position.Keyset(List(KeysetValue.TimestampV(instant)))
+    )
+    expect.same(
+      Left("Keyset anchor arity mismatch: 2 cursor field(s) but 1 anchor value(s)"),
+      Pagination.buildSql(query, select, Some(messageKeyset)).map(_.fragment.sql)
+    )
+
+  pureTest("keyset anchor with extra values returns Left, never silently ignored"):
+    // sort by id -> cursor fields [id]; a second value has no rung and would be dropped by zip.
+    val query = resolved(
+      ListSet(MessageField.Id.ascending),
+      Position.Keyset(List(KeysetValue.LongV(5), KeysetValue.LongV(6)))
+    )
+    expect.same(
+      Left("Keyset anchor arity mismatch: 1 cursor field(s) but 2 anchor value(s)"),
+      Pagination.buildSql(query, select, Some(messageKeyset)).map(_.fragment.sql)
+    )
