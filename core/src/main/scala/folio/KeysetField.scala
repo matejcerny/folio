@@ -2,6 +2,8 @@ package folio
 
 import scala.annotation.{ implicitNotFound, targetName }
 
+import folio.FolioError.CursorDecodingError
+
 /** Enables keyset pagination by both designating the unique field within `FIELD` and extracting its value from a row of
   * type `T`. Provide one alongside your [[FieldSchema]] to opt into keyset; omit it to fall back to offset-only
   * pagination.
@@ -73,14 +75,28 @@ private[folio] trait FieldExtractor[T]:
   def encodedFromRow(row: T): KeysetValue
   def isAbsentable: Boolean
 
+  /** Check that a decoded anchor slot carries a [[KeysetValue]] variant this field's codec can consume. An `Absent`
+    * value is always accepted here (absentability is validated separately); a concrete variant the codec does not
+    * recognise is rejected, so a type-forged cursor fails as a [[CursorDecodingError]] rather than reaching the SQL
+    * driver as a mismatched bind.
+    */
+  def validateVariant(value: KeysetValue): Either[CursorDecodingError, Unit]
+
 private[folio] object FieldExtractor:
   def required[T, V](extractFn: T => V)(using codecForValue: CursorValueCodec[V]): FieldExtractor[T] =
     new FieldExtractor[T]:
       def encodedFromRow(row: T): KeysetValue = codecForValue.toKeysetValue(extractFn(row))
       def isAbsentable: Boolean = false
+      def validateVariant(value: KeysetValue): Either[CursorDecodingError, Unit] = variantOf(codecForValue, value)
 
   def absentable[T, V](extractFn: T => Option[V])(using codecForValue: CursorValueCodec[V]): FieldExtractor[T] =
     new FieldExtractor[T]:
       def encodedFromRow(row: T): KeysetValue =
         extractFn(row).map(codecForValue.toKeysetValue).getOrElse(KeysetValue.Absent)
       def isAbsentable: Boolean = true
+      def validateVariant(value: KeysetValue): Either[CursorDecodingError, Unit] = variantOf(codecForValue, value)
+
+  private def variantOf[V](codec: CursorValueCodec[V], value: KeysetValue): Either[CursorDecodingError, Unit] =
+    value match
+      case KeysetValue.Absent => Right(())
+      case concrete           => codec.fromKeysetValue(concrete).map(_ => ())

@@ -60,7 +60,7 @@ object PaginationSuite extends SimpleIOSuite:
 
   private def typesOf(query: ResolvedQuery[MessageField]): List[String] =
     Pagination.buildSql(query, select, Some(messageKeyset)) match
-      case Right(applied) => applied.fragment.encoder.types.map(_.name).toList
+      case Right(applied) => applied.fragment.encoder.types.map(_.name)
       case Left(error)    => List(s"buildSql failed: $error")
 
   // === Single non-absentable cursor field (sort by id): all four strict-step rows ===
@@ -160,6 +160,16 @@ object PaginationSuite extends SimpleIOSuite:
       expect.same(List("int8", "int4"), typesOf(query))
     ).combineAll
 
+  pureTest("absentable DESC forward absent: strict collapses to FALSE, ORDER BY DESC NULLS LAST"):
+    val query = resolved(
+      ListSet(MessageField.LastReadAt.descending),
+      Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5)))
+    )
+    expect.same(
+      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (FALSE) OR (usersql."last_read_at" IS NOT DISTINCT FROM NULL AND (usersql."id" > $1)) ORDER BY usersql."last_read_at" DESC NULLS LAST, usersql."id" ASC LIMIT $2""",
+      sqlOf(query)
+    )
+
   pureTest("absentable ASC backward absent: strict becomes IS NOT NULL"):
     val query = resolved(
       ListSet(MessageField.LastReadAt.ascending),
@@ -168,6 +178,17 @@ object PaginationSuite extends SimpleIOSuite:
     )
     expect.same(
       """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."last_read_at" IS NOT NULL) OR (usersql."last_read_at" IS NOT DISTINCT FROM NULL AND (usersql."id" < $1)) ORDER BY usersql."last_read_at" DESC NULLS FIRST, usersql."id" DESC LIMIT $2""",
+      sqlOf(query)
+    )
+
+  pureTest("absentable DESC backward absent: strict becomes IS NOT NULL, ORDER BY ASC NULLS FIRST"):
+    val query = resolved(
+      ListSet(MessageField.LastReadAt.descending),
+      Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5))),
+      Direction.Backward
+    )
+    expect.same(
+      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."last_read_at" IS NOT NULL) OR (usersql."last_read_at" IS NOT DISTINCT FROM NULL AND (usersql."id" < $1)) ORDER BY usersql."last_read_at" ASC NULLS FIRST, usersql."id" DESC LIMIT $2""",
       sqlOf(query)
     )
 
@@ -210,15 +231,32 @@ object PaginationSuite extends SimpleIOSuite:
 
   // === Offset branch ===
 
-  pureTest("offset branch: OFFSET $n LIMIT $m, no keyset predicate, forward-orientation ORDER BY"):
+  pureTest("offset branch: OFFSET $n LIMIT $m, no keyset predicate, id tiebreaker appended to ORDER BY"):
     val query = resolved(ListSet(MessageField.EnqueuedAt.descending), Position.Offset.unsafe(40))
     List(
       expect.same(
-        """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."enqueued_at" DESC NULLS LAST OFFSET $1 LIMIT $2""",
+        """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC OFFSET $1 LIMIT $2""",
         sqlOf(query)
       ),
       expect.same(List("int8", "int4"), typesOf(query))
     ).combineAll
+
+  pureTest("offset branch with no sort fields (KeysetField present): id tiebreaker still yields a total order"):
+    val query = resolved(ListSet.empty, Position.Offset.unsafe(0))
+    List(
+      expect.same(
+        """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."id" ASC OFFSET $1 LIMIT $2""",
+        sqlOf(query)
+      ),
+      expect.same(List("int8", "int4"), typesOf(query))
+    ).combineAll
+
+  pureTest("offset branch with no sort fields and no KeysetField: genuine no-ORDER BY form preserved"):
+    val query = resolved(ListSet.empty, Position.Offset.unsafe(0))
+    expect.same(
+      Right("""SELECT * FROM (SELECT * FROM messages) AS usersql OFFSET $1 LIMIT $2"""),
+      Pagination.buildSql(query, select, None).map(_.fragment.sql)
+    )
 
   // === Keyset value -> codec mapping ===
 

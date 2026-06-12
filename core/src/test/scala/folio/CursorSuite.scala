@@ -98,6 +98,8 @@ object CursorSuite extends SimpleIOSuite:
     expect.sameR(decoded, roundtrip)
 
   pureTest("roundtrip for keyset with IntV value"):
+    // Int-typed id so the IntV variant matches the id slot's codec.
+    given KeysetField[TestField, Row] = KeysetField.uniqueBy(TestField.Id, (row: Row) => row.id.toInt)
     val decoded = DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.IntV(42))))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
@@ -105,6 +107,7 @@ object CursorSuite extends SimpleIOSuite:
     expect.sameR(decoded, roundtrip)
 
   pureTest("roundtrip for keyset value containing the legacy length separator"):
+    given KeysetField[TestField, Row] = KeysetField.uniqueBy(TestField.Id, (row: Row) => row.name)
     val decoded = DecodedCursor(Direction.Forward, keysetOf("a::b"))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
@@ -112,6 +115,7 @@ object CursorSuite extends SimpleIOSuite:
     expect.sameR(decoded, roundtrip)
 
   pureTest("roundtrip for keyset value containing the legacy part separator"):
+    given KeysetField[TestField, Row] = KeysetField.uniqueBy(TestField.Id, (row: Row) => row.name)
     val decoded = DecodedCursor(Direction.Forward, keysetOf("a;b;c"))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
@@ -119,6 +123,7 @@ object CursorSuite extends SimpleIOSuite:
     expect.sameR(decoded, roundtrip)
 
   pureTest("roundtrip for keyset with single empty-string value"):
+    given KeysetField[TestField, Row] = KeysetField.uniqueBy(TestField.Id, (row: Row) => row.name)
     val decoded = DecodedCursor(Direction.Forward, keysetOf(""))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
@@ -405,6 +410,61 @@ object CursorSuite extends SimpleIOSuite:
       CursorDecodingError.IncompatibleCursor("anchor has Absent value in non-absentable field 'name'"),
       roundtrip
     )
+
+  pureTest("decode rejects a forged variant in the id slot (StringV where Long expected)"):
+    // No sort fields, so the only cursor field is the Long id. Forge a StringV into that slot: it would otherwise
+    // reach the SQL driver as a `bigint > text` bind and raise through F instead of a CursorDecodingError.
+    val decoded = DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.StringV("not-a-long"))))
+    val cursor = Cursor.encode(decoded, baseQuery)
+    val roundtrip = Cursor.decode(cursor, baseQuery)
+
+    expect.sameL(
+      CursorDecodingError.IncompatibleCursor("anchor value for field 'id' has incompatible type"),
+      roundtrip
+    )
+
+  pureTest("decode rejects a forged variant in a registered sort slot"):
+    given KeysetField[TestField, Row] =
+      KeysetField
+        .uniqueBy(TestField.Id, (row: Row) => row.id)
+        .withField(TestField.Name, (row: Row) => row.name)
+    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Name.ascending))
+    // Name expects StringV; forge a LongV into that slot while keeping the id slot valid.
+    val decoded =
+      DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.LongV(1L), KeysetValue.LongV(7L))))
+    val cursor = Cursor.encode(decoded, query)
+    val roundtrip = Cursor.decode(cursor, query)
+
+    expect.sameL(
+      CursorDecodingError.IncompatibleCursor("anchor value for field 'name' has incompatible type"),
+      roundtrip
+    )
+
+  pureTest("decode surfaces arity mismatch before a forged variant when both would fire"):
+    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Name.ascending))
+    // Wrong arity (3 values for 2 cursor fields) AND a forged variant in the first slot: arity wins.
+    val decoded =
+      DecodedCursor(
+        Direction.Forward,
+        Position.Keyset(List(KeysetValue.LongV(1L), KeysetValue.LongV(7L), KeysetValue.LongV(99L)))
+      )
+    val cursor = Cursor.encode(decoded, query)
+    val roundtrip = Cursor.decode(cursor, query)
+
+    expect.sameL(CursorDecodingError.IncompatibleCursor("keyset arity does not match query"), roundtrip)
+
+  pureTest("decode accepts Absent in a registered absentable slot despite variant validation"):
+    given KeysetField[TestField, Row] =
+      KeysetField
+        .uniqueBy(TestField.Id, (row: Row) => row.id)
+        .withField(TestField.LastSeen, (row: Row) => row.lastSeen)
+    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.LastSeen.ascending))
+    val decoded =
+      DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5L))))
+    val cursor = Cursor.encode(decoded, query)
+    val roundtrip = Cursor.decode(cursor, query)
+
+    expect.sameR(decoded, roundtrip)
 
   pureTest("decode rejects keyset cursor with too few values"):
     val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Name.ascending))

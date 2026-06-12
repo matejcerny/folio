@@ -15,6 +15,7 @@ object Position:
   case class Offset private[folio] (offset: Long) extends Position("offset"):
     def previous(limit: Limit): Offset = Offset.unsafe(math.max(Offset.First.offset, offset - limit.value))
     def next(limit: Limit): Offset = Offset.unsafe(offset + limit.value)
+    private[folio] def isFirst: Boolean = offset == Offset.First.offset
 
   object Offset:
     val First: Offset = unsafe(0L)

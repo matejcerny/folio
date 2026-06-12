@@ -69,4 +69,4 @@ Tests use [weaver-cats](https://typelevel.org/weaver-test/).
 
 With sbt 2, `sbt --client test` can return a cached no-op result when no code or test inputs changed since the latest
 test run. In that case the output may say `Passed: Total 0` / `No tests to run`, which means nothing was re-executed,
-not that test discovery is broken. Run `sbt --client clean` first when you need to force the suites to execute again.
+not that test discovery is broken. Run `sbt --client cleanFull` first when you need to force the suites to execute again.

@@ -194,15 +194,32 @@ object PagePaginationSuite extends SimpleIOSuite:
       expect.same(Some(DecodedCursor(Direction.Backward, Position.Offset.unsafe(28L))), previous)
     ).combineAll
 
-  pureTest("offset: backward with hasMore=false emits next only"):
+  pureTest("offset: backward at non-zero offset emits both (previous availability is positional, not hasMore-gated)"):
+    // Offset previous availability is purely positional per ADR 0003: at offset 30 > 0 a previous page
+    // exists regardless of hasMore (which for an offset fetch measures forward rows, not earlier ones).
     val current = DecodedCursor(Direction.Backward, Position.Offset.unsafe(30L))
     val query = queryWithCurrent(offsetQuery, current)
     val rowsPlusOne = syntheticRows(1)
     val page = pageOrFail(rowsPlusOne, query)
     val next = page.nextCursor.map(decodedOf(_, query))
+    val previous = page.previousCursor.map(decodedOf(_, query))
+    List(
+      expect.same(Some(DecodedCursor(Direction.Forward, Position.Offset.unsafe(32L))), next),
+      expect.same(Some(DecodedCursor(Direction.Backward, Position.Offset.unsafe(28L))), previous)
+    ).combineAll
+
+  pureTest("offset: backward at offset 0 with hasMore=true emits no previous cursor (regression: no self-loop)"):
+    // Following previousCursor backward reaches offset 0. hasMore is true (forward rows exist), but per ADR 0003
+    // an offset backward fetch walks forward, so hasMore must not emit a previous cursor here — doing so would
+    // clamp back to offset 0 and self-loop forever.
+    val current = DecodedCursor(Direction.Backward, Position.Offset.First)
+    val query = queryWithCurrent(offsetQuery, current)
+    val rowsPlusOne = syntheticRows(1, 2, 3)
+    val page = pageOrFail(rowsPlusOne, query)
+    val next = page.nextCursor.map(decodedOf(_, query))
     List(
       expect.same(None, page.previousCursor),
-      expect.same(Some(DecodedCursor(Direction.Forward, Position.Offset.unsafe(32L))), next)
+      expect.same(Some(DecodedCursor(Direction.Forward, Position.Offset.unsafe(2L))), next)
     ).combineAll
 
   // ---------- offset-only (no IdField) ----------
@@ -261,6 +278,18 @@ object PagePaginationSuite extends SimpleIOSuite:
     List(
       expect.same(None, page.nextCursor),
       expect.same(Some(DecodedCursor(Direction.Backward, Position.Offset.unsafe(0L))), previous)
+    ).combineAll
+
+  pureTest("offset-only: backward at offset 0 with hasMore=true emits no previous cursor (regression: no self-loop)"):
+    // Same positional rule on the offset-only (no KeysetField) path, which flows through the same Position.Offset branch.
+    val current = DecodedCursor(Direction.Backward, Position.Offset.First)
+    val query = queryWithCurrent(offsetOnlyQuery, current)
+    val rowsPlusOne = syntheticRows(1, 2, 3)
+    val page = pageOrFail(rowsPlusOne, query)
+    val next = page.nextCursor.map(decodedOf(_, query))
+    List(
+      expect.same(None, page.previousCursor),
+      expect.same(Some(DecodedCursor(Direction.Forward, Position.Offset.unsafe(2L))), next)
     ).combineAll
 
   // ---------- realistic fetcher ----------

@@ -57,7 +57,7 @@ lazy val integration = project
 
 lazy val example = project
   .in(file("example"))
-  .dependsOn(core)
+  .dependsOn(core, skunk)
   .settings(
     name := "folio-example",
     publish / skip := true,

@@ -101,7 +101,14 @@ object Page:
                 DecodedCursor(Direction.Forward, advance.next(fetchPosition, baseSortBys, ordered, limit)),
                 fingerprint
               )
-            val previousCursor = Option.when((isBackward && hasMore) || (!isBackward && !current.isFirst)):
+            val hasPreviousPage = fetchPosition match
+              // ADR 0003: offset is absolute and direction is a no-op, so a previous page
+              // exists iff we are not already at the start. hasMore measures forward rows
+              // for an offset fetch and must not gate the previous cursor (would self-loop
+              // at offset 0).
+              case offset: Position.Offset => !offset.isFirst
+              case _: Position.Keyset      => (isBackward && hasMore) || (!isBackward && !current.isFirst)
+            val previousCursor = Option.when(hasPreviousPage):
               Cursor.encodeWithFingerprint(
                 DecodedCursor(Direction.Backward, advance.previous(fetchPosition, baseSortBys, ordered, limit)),
                 fingerprint

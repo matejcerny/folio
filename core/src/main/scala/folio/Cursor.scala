@@ -53,15 +53,20 @@ object Cursor:
   private[folio] def keysetMetadataFor[FIELD: FieldSchema](
       keysetField: KeysetField[FIELD, ?]
   ): KeysetMetadata[FIELD] =
-    KeysetMetadata(Some(keysetField.field), keysetField.absentableFields)
+    KeysetMetadata(
+      Some(keysetField.field),
+      keysetField.absentableFields,
+      keysetField.fields.view.mapValues(_.validateVariant).toMap
+    )
 
   private[folio] case class KeysetMetadata[FIELD](
       uniqueField: Option[FIELD],
-      absentableFields: Set[FIELD]
+      absentableFields: Set[FIELD],
+      variantValidators: Map[FIELD, KeysetValue => Either[CursorDecodingError, Unit]]
   )
 
   private[folio] object KeysetMetadata:
-    def empty[FIELD]: KeysetMetadata[FIELD] = KeysetMetadata(None, Set.empty)
+    def empty[FIELD]: KeysetMetadata[FIELD] = KeysetMetadata(None, Set.empty, Map.empty)
 
   private[folio] def encodeWithFingerprint(decoded: DecodedCursor, fingerprint: Int)(using
       codec: CursorCodec
@@ -79,6 +84,7 @@ object Cursor:
       for
         _ <- validateKeysetArity(decoded, query, metadata)
         _ <- validateAbsentSlots(decoded, query, metadata)
+        _ <- validateVariantSlots(decoded, query, metadata)
       yield decoded
 
   private def decodeBytes(cursor: Cursor, fingerprint: Int)(using
@@ -140,6 +146,29 @@ object Cursor:
             case (field, KeysetValue.Absent) if !metadata.absentableFields.contains(field) =>
               CursorDecodingError.IncompatibleCursor(
                 s"anchor has Absent value in non-absentable field '${field.name}'"
+              )
+          .toLeft(())
+      case _ => Right(())
+
+  /** Reject a decoded anchor whose slot carries a [[KeysetValue]] variant the field's registered codec cannot consume
+    * (e.g. a forged `StringV` in a `Long` id slot). The query fingerprint pins the query shape but not the anchor's
+    * per-slot variants, so without this check a type-forged cursor would pass core validation and reach the SQL driver
+    * as a mismatched bind, surfacing as a driver error through `F` instead of a [[CursorDecodingError]]. `Absent` slots
+    * pass here; their absentability is validated by [[validateAbsentSlots]].
+    */
+  private def validateVariantSlots[FIELD: FieldSchema](
+      decoded: DecodedCursor,
+      query: Query[FIELD],
+      metadata: KeysetMetadata[FIELD]
+  ): Either[CursorDecodingError, Unit] =
+    decoded.position match
+      case Position.Keyset(values) if values.nonEmpty =>
+        expectedCursorFields(query, metadata)
+          .zip(values)
+          .collectFirst:
+            case (field, value) if metadata.variantValidators.get(field).exists(_(value).isLeft) =>
+              CursorDecodingError.IncompatibleCursor(
+                s"anchor value for field '${field.name}' has incompatible type"
               )
           .toLeft(())
       case _ => Right(())

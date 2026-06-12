@@ -1,8 +1,12 @@
 package folio.skunk
 
 import scala.collection.immutable.ListSet
+import scala.compiletime.summonFrom
 
-import skunk.{ AppliedFragment, Void }
+import cats.effect.Concurrent
+import cats.syntax.flatMap.*
+import cats.syntax.functor.*
+import skunk.{ AppliedFragment, Decoder, Session, Void }
 import skunk.codec.all.{ int4, int8, text, timestamptz }
 import skunk.implicits.*
 
@@ -10,99 +14,91 @@ import folio.*
 
 /** Skunk-backed cursor pagination.
   *
-  * This object hosts folio-skunk's public API. Phase 1 ships only [[buildSql]] (L1) — the pure, effect-free SQL
-  * composition core. The effectful [[withPagination]] (L3) wiring arrives in a later phase.
+  * [[withPagination]] is the end-to-end entry point; [[buildSql]] exposes its pure SQL-composition layer.
   */
 object Pagination:
 
-  /** Compose the wrapped, parameterized keyset/offset SQL for a resolved query.
+  /** Paginate an opaque `select` using the supplied Skunk session and decoder.
     *
-    * The user's `select` is treated as an opaque block and wrapped (see ADR 0004):
+    * An in-scope `KeysetField[FIELD, T]` makes keyset pagination available; unsupported sorts fall back to offset. The
+    * caller owns the `Session` lifecycle. Cursor failures are returned in the `Either`; SQL and session failures are
+    * raised in `F`.
+    */
+  inline def withPagination[F[_]: Concurrent, T, FIELD: FieldSchema](
+      query: Query[FIELD],
+      session: Session[F],
+      decoder: Decoder[T]
+  )(
+      select: AppliedFragment
+  )(using CursorCodec): F[Either[FolioError.CursorDecodingError, Page[T]]] =
+    summonFrom:
+      case keysetField: KeysetField[FIELD, T] =>
+        Page.withPagination[F, T, FIELD](query, fetchFromSession(_, session, decoder, select, Some(keysetField)))
+      case _ =>
+        Page.withPagination[F, T, FIELD](query, fetchFromSession(_, session, decoder, select, None))
+
+  private def fetchFromSession[F[_]: Concurrent, T, FIELD: FieldSchema](
+      resolved: ResolvedQuery[FIELD],
+      session: Session[F],
+      decoder: Decoder[T],
+      select: AppliedFragment,
+      keysetField: Option[KeysetField[FIELD, ?]]
+  ): F[Seq[T]] =
+    buildSql(resolved, select, keysetField) match
+      case Right(applied) =>
+        session
+          .prepare(applied.fragment.query(decoder))
+          .flatMap(_.stream(applied.argument, chunkSize = resolved.limit.value).compile.toList.widen[Seq[T]])
+      case Left(error) =>
+        Concurrent[F].raiseError(new RuntimeException(s"folio-skunk buildSql: $error"))
+
+  /** Compose parameterized keyset or offset SQL for a resolved query.
+    *
+    * The user's `select` is wrapped as an opaque subquery (ADR 0004):
     * {{{
     *   SELECT * FROM ( <select> ) AS usersql
-    *    WHERE <keyset predicate>
-    *    ORDER BY <sortBys, direction-aware>
-    *    LIMIT <limit>
+    *   WHERE <keyset predicate>
+    *   ORDER BY <sort fields>
+    *   LIMIT <resolved limit>
     * }}}
     *
-    * Keyset values, the offset, and the limit are bound as Skunk parameters via `AppliedFragment.|+|`, never baked into
-    * the SQL text: the template stays stable across cursor advances (prepared-statement-cache stability), only the
-    * bound arguments change.
+    * The subquery must project every sort and keyset column under its `FieldSchema` name.
     *
-    * `buildSql` is a low-level escape hatch for users who want their own error mapping, observability hooks, or
-    * multi-statement transactions.
+    * Values are bound through `AppliedFragment`; the SQL shape can still differ for the first page and `Absent`
+    * anchors. Pass the same `KeysetField` used to resolve the query, or `None` for offset-only pagination. A missing
+    * keyset field or mismatched anchor arity returns `Left` (ADR 0005).
     *
-    * ==Keyset metadata==
+    * `resolved.filters` is intentionally not rendered; apply filtering inside `select`. Filters still participate in
+    * the cursor fingerprint (ADR 0006). Offset queries append the unique field when available; without one, the caller
+    * must supply a total order (ADR 0007).
     *
-    * Pass the same `KeysetField[FIELD, T]` you use for keyset pagination as `Some(keysetField)` to render the keyset
-    * predicate; pass `None` only for an offset-positioned query to produce the offset form. The metadata is an explicit
-    * argument rather than summoned so the escape hatch stays usable when several row models share one `FIELD` enum (a
-    * wildcard `summon[KeysetField[FIELD, ?]]` would be ambiguous), mirroring `Page.withPagination` (see ADR 0005).
-    *
-    * ==Failures (`Left`)==
-    *
-    *   - `None` paired with a `Position.Keyset` resolved query — the keyset predicate needs the id metadata only the
-    *     `KeysetField` carries, so this returns a `Left` rather than rendering SQL with the id tiebreaker dropped (or
-    *     an empty `ORDER BY` when no sort fields are present).
-    *   - A non-empty `Position.Keyset` anchor whose value count differs from the cursor-field count (the sort fields
-    *     plus the appended id tiebreaker) — returns a `Left` rather than letting the predicate-building `zip` silently
-    *     drop or ignore values.
-    *
-    * An empty anchor (`Position.Keyset(Nil)`) is the valid first-page request. (See ADR 0005.)
-    *
-    * ==Not applied: filters==
-    *
-    * `resolved.filters` is ignored here: the user's opaque `select` is their filtering escape hatch. Filters still feed
-    * the cursor fingerprint in core for stale detection. The contract that sort/keyset columns must be projected by the
-    * inner `select` will ''tighten'' when filter rendering lands (a previously-valid `select` could then start
-    * erroring). (See ADR 0006.)
-    *
-    * ==Keyset value codecs==
-    *
-    * The `KeysetValue` -> Skunk-codec mapping is hard-coded, with gaps: `uuid`-as-`StringV` (yields
-    * `operator does not exist: uuid > text`), `numeric`/`BigDecimal`, and plain `timestamp` are unsupported.
-    * Workaround: use `timestamptz`, or cast/alias the column in the `select` projection. A per-field codec override is
-    * deferred and forward-compatible (it arrives as an additional input, not a change to this signature).
+    * Keyset values use fixed Skunk codecs (`int4`, `int8`, `text`, `timestamptz`). UUID, numeric/BigDecimal, and plain
+    * timestamp fields require a compatible cast in `select`.
     */
   def buildSql[FIELD: FieldSchema](
       resolved: ResolvedQuery[FIELD],
       select: AppliedFragment,
       keyset: Option[KeysetField[FIELD, ?]]
   ): Either[String, AppliedFragment] =
-    (resolved.position, keyset) match
-      case (_: Position.Keyset, None) =>
-        Left("Position.Keyset requires Some(keysetField); pass the KeysetField used to resolve the query")
-      case (_, Some(keysetField)) =>
-        render(resolved, select, Some(keysetField.field), keysetField.absentableFields)
-      case (_, None) =>
-        render(resolved, select, None, Set.empty[FIELD])
-
-  private def render[FIELD: FieldSchema](
-      resolved: ResolvedQuery[FIELD],
-      select: AppliedFragment,
-      idField: Option[FIELD],
-      absentableFields: Set[FIELD]
-  ): Either[String, AppliedFragment] =
     resolved.position match
-      case offset: Position.Offset => Right(renderOffset(resolved, select, offset))
-      case keyset: Position.Keyset => renderKeyset(resolved, select, keyset, idField, absentableFields)
+      case offset: Position.Offset         => Right(renderOffset(resolved, select, offset, keyset))
+      case keysetPosition: Position.Keyset =>
+        keyset match
+          case Some(keysetField) =>
+            renderKeyset(resolved, select, keysetPosition, keysetField.field, keysetField.absentableFields)
+          case None =>
+            Left("Position.Keyset requires Some(keysetField); pass the KeysetField used to resolve the query")
 
   private def renderKeyset[FIELD: FieldSchema](
       resolved: ResolvedQuery[FIELD],
       select: AppliedFragment,
       keyset: Position.Keyset,
-      idField: Option[FIELD],
+      idField: FIELD,
       absentableFields: Set[FIELD]
   ): Either[String, AppliedFragment] =
-    // Cursor fields are the canonical sort fields with the id appended as a tiebreaker when it is not already a
-    // sort field (mirrors CursorAdvance.cursorFieldsFor, which builds Position.Keyset.values in the same order).
-    val cursorFields = idField match
-      case Some(id) => CursorAdvance.cursorFieldsFor(resolved.sortBys, id)
-      case None     => resolved.sortBys.toList.map(_.field)
+    val cursorFields = CursorAdvance.cursorFieldsFor(resolved.sortBys, idField)
 
-    // A Nil anchor is the first-page keyset (no WHERE). A non-empty anchor must carry exactly one value per cursor
-    // field: keysetPredicate zips the two, so a shorter anchor silently drops trailing rungs (including the id
-    // tiebreaker) and a longer one ignores the extras. Guard before rendering rather than emit truncated SQL.
+    // Empty is the first-page anchor; otherwise exact arity prevents zip from truncating the predicate.
     Either.cond(
       keyset.values.isEmpty || keyset.values.size == cursorFields.size, {
         val whereClause =
@@ -126,17 +122,20 @@ object Pagination:
   private def renderOffset[FIELD: FieldSchema](
       resolved: ResolvedQuery[FIELD],
       select: AppliedFragment,
-      offset: Position.Offset
+      offset: Position.Offset,
+      keyset: Option[KeysetField[FIELD, ?]]
   ): AppliedFragment =
-    // Offset is absolute, so direction is a no-op: the ORDER BY always uses the canonical forward orientation.
-    val sortFields = resolved.sortBys.toList.map(_.field)
+    // Offset is absolute, so use forward ordering and append the unique field when available.
+    val orderFields = keyset match
+      case Some(keysetField) => CursorAdvance.cursorFieldsFor(resolved.sortBys, keysetField.field)
+      case None              => resolved.sortBys.toList.map(_.field)
+    val sorted = orderBy(resolved.sortBys, orderFields, Direction.Forward)
     val orderByClause =
-      if sortFields.isEmpty then AppliedFragment.empty
-      else raw(" ORDER BY ") |+| orderBy(resolved.sortBys, sortFields, Direction.Forward)
+      if orderFields.isEmpty then AppliedFragment.empty
+      else raw(" ORDER BY ") |+| sorted
 
     wrap(select) |+| orderByClause |+| raw(" OFFSET ") |+| sql"$int8".apply(offset.offset) |+| limitClause(resolved)
 
-  /** `SELECT * FROM ( <select> ) AS usersql` — the user's SELECT as an opaque subquery. */
   private def wrap(select: AppliedFragment): AppliedFragment =
     raw("SELECT * FROM (") |+| select |+| raw(") AS usersql")
 
@@ -144,14 +143,10 @@ object Pagination:
     // resolved.limit is already the bounded fetch size (limit + 1); do not add 1 again.
     raw(" LIMIT ") |+| sql"$int4".apply(resolved.limit.value)
 
-  // === Keyset WHERE generation ===
-  /** Expanded disjunction (never a row-value tuple comparison, which can express neither mixed ASC/DESC nor NULLS
-    * placement):
-    *
-    * strict_1 OR (eq_1 AND strict_2) OR (eq_1 AND eq_2 AND strict_3) ...
-    *
-    * Equality rungs use IS NOT DISTINCT FROM so NULL = NULL is true. The strict-after step is direction- and
-    * Absent-dependent (see strictStep).
+  // === Keyset predicate ===
+
+  /** Lexicographic seek expanded for mixed directions and NULL placement: `strict_1 OR (eq_1 AND strict_2) OR ...`.
+    * Equality uses `IS NOT DISTINCT FROM` so NULL equals NULL.
     */
   private def keysetPredicate[FIELD: FieldSchema](
       sortBys: ListSet[SortBy[FIELD]],
@@ -178,10 +173,8 @@ object Pagination:
   private def equalityRung(column: AppliedFragment, value: KeysetValue): AppliedFragment =
     column |+| raw(" IS NOT DISTINCT FROM ") |+| bindValue(value)
 
-  /** The direction- and Absent-aware strict-step, returned parenthesized so it composes safely inside the `AND`/`OR`
-    * disjunction. For an absentable field the column itself may be NULL, so the present case adds an `OR col IS NULL`
-    * rung and the Absent anchor collapses to `FALSE` (forward) / `col IS NOT NULL` (backward). A non-absentable field's
-    * anchor is never Absent and the column is never NULL, so it is a plain comparison.
+  /** Direction-aware strict seek. Absentable values sort last forward and first backward; an `Absent` anchor becomes
+    * `FALSE` forward or `IS NOT NULL` backward.
     */
   private def strictStep(
       column: AppliedFragment,
@@ -216,7 +209,7 @@ object Pagination:
 
     parens(inner)
 
-  // === ORDER BY generation ===
+  // === Ordering ===
   private def orderBy[FIELD: FieldSchema](
       sortBys: ListSet[SortBy[FIELD]],
       cursorFields: List[FIELD],
@@ -227,9 +220,8 @@ object Pagination:
       orderByClause(columnReference(field), orderFor(sortBys, field), direction, appended)
     joinFragments(clauses, raw(", "))
 
-  /** The appended id tiebreaker (a cursor field that is not a sort field) is non-Absent, so it carries no NULLS clause;
-    * with its default ascending canonical order it emits ASC forward / DESC backward. Genuine sort fields carry the
-    * full direction-aware NULLS placement: Absent sorts last forward, first backward (ADR 0001 + ADR 0003).
+  /** Appended unique fields use their default ascending order without a NULLS clause. Sort fields reverse both order
+    * and NULL placement for backward traversal (ADRs 0001 and 0003).
     */
   private def orderByClause(
       column: AppliedFragment,
@@ -239,11 +231,9 @@ object Pagination:
   ): AppliedFragment =
     val keyword =
       if appended then
-        (order, direction) match
-          case (Order.Ascending, Direction.Forward)   => "ASC"
-          case (Order.Ascending, Direction.Backward)  => "DESC"
-          case (Order.Descending, Direction.Forward)  => "DESC"
-          case (Order.Descending, Direction.Backward) => "ASC"
+        direction match
+          case Direction.Forward  => "ASC"
+          case Direction.Backward => "DESC"
       else
         (order, direction) match
           case (Order.Ascending, Direction.Forward)   => "ASC NULLS LAST"
@@ -255,19 +245,15 @@ object Pagination:
   private def orderFor[FIELD](sortBys: ListSet[SortBy[FIELD]], field: FIELD): Order =
     sortBys.find(_.field == field).map(_.order).getOrElse(Order.Default)
 
-  // === Column rendering ===
+  // === Rendering ===
 
-  /** `usersql."<name>"`, with the identifier double-quoted and any embedded double quote doubled. Injection-safe by
-    * construction (total, not regex-dependent); transparent for ordinary snake_case names, correct for reserved words
-    * and mixed case.
-    */
+  /** A qualified, safely quoted identifier. */
   private def columnReference[FIELD: FieldSchema](field: FIELD): AppliedFragment =
     raw("usersql." + quoteIdentifier(field.name))
 
   private def quoteIdentifier(name: String): String =
     "\"" + name.replace("\"", "\"\"") + "\""
 
-  // === Keyset value -> Skunk codec mapping (hard-coded) ===
   private def bindValue(value: KeysetValue): AppliedFragment =
     value match
       case KeysetValue.IntV(intValue)             => sql"$int4".apply(intValue)
