@@ -26,11 +26,6 @@ case class Event(timestamp: String, source: String)
   )
 
   // Build a Page of results using the pagination helper.
-  Page
-    .withPagination[cats.Id, Event, EventField](query, _ => rows)
-    .fold(
-      error => println(s"Error:     $error"),
-      page =>
-        println(s"Next:      ${page.nextCursor.map(_.value)}")
-        println(s"Previous:  ${page.previousCursor.map(_.value)}")
-    )
+  val page = Page.withPagination[FolioEffect.Id, Event, EventField](query, _ => rows)
+  println(s"Next:      ${page.nextCursor.map(_.value)}")
+  println(s"Previous:  ${page.previousCursor.map(_.value)}")

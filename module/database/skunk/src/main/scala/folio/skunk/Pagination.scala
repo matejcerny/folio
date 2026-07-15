@@ -18,11 +18,14 @@ import folio.*
   */
 object Pagination:
 
+  private given folioEffect[F[_]](using concurrent: Concurrent[F]): FolioEffect[F] with
+    def map[A, B](effect: F[A])(transform: A => B): F[B] = concurrent.map(effect)(transform)
+    def raiseError[A](error: FolioError): F[A] = concurrent.raiseError(error)
+
   /** Paginate an opaque `select` using the supplied Skunk session and decoder.
     *
     * An in-scope `KeysetField[FIELD, T]` makes keyset pagination available; unsupported sorts fall back to offset. The
-    * caller owns the `Session` lifecycle. Cursor failures are returned in the `Either`; SQL and session failures are
-    * raised in `F`.
+    * caller owns the `Session` lifecycle. Cursor, SQL, and session failures are raised in `F`.
     */
   inline def withPagination[F[_]: Concurrent, T, FIELD: FieldSchema](
       query: Query[FIELD],
@@ -30,14 +33,14 @@ object Pagination:
       decoder: Decoder[T]
   )(
       select: AppliedFragment
-  )(using CursorCodec): F[Either[FolioError.CursorDecodingError, Page[T]]] =
+  )(using CursorCodec): F[Page[T]] =
     summonFrom:
       case keysetField: KeysetField[FIELD, T] =>
         Page.withPagination[F, T, FIELD](query, fetchFromSession(_, session, decoder, select, Some(keysetField)))
       case _ =>
         Page.withPagination[F, T, FIELD](query, fetchFromSession(_, session, decoder, select, None))
 
-  private def fetchFromSession[F[_]: Concurrent, T, FIELD: FieldSchema](
+  private[folio] def fetchFromSession[F[_]: Concurrent, T, FIELD: FieldSchema](
       resolved: ResolvedQuery[FIELD],
       session: Session[F],
       decoder: Decoder[T],

@@ -37,15 +37,10 @@ given KeysetField[MessageField, Message] =
 
   // With KeysetField in scope and LastReadAt registered as absentable via `.withField` (Option overload),
   // this picks keyset; the cursor anchor is (lastReadAt, id) and a missing lastReadAt encodes as Absent.
-  Page
-    .withPagination[cats.Id, Message, MessageField](query, _ => rows)
-    .fold(
-      error => println(s"Error:     $error"),
-      page =>
-        println(s"Next:      ${page.nextCursor.map(_.value)}")
-        println(s"Previous:  ${page.previousCursor.map(_.value)}")
-        page.nextCursor.foreach: cursor =>
-          Cursor.decode(cursor, query) match
-            case Right(decoded) => println(s"Next decoded: $decoded")
-            case Left(error)    => println(s"Decode error: $error")
-    )
+  val page = Page.withPagination[FolioEffect.Id, Message, MessageField](query, _ => rows)
+  println(s"Next:      ${page.nextCursor.map(_.value)}")
+  println(s"Previous:  ${page.previousCursor.map(_.value)}")
+  page.nextCursor.foreach: cursor =>
+    Cursor.decode(cursor, query) match
+      case Right(decoded) => println(s"Next decoded: $decoded")
+      case Left(error)    => println(s"Decode error: $error")

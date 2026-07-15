@@ -1,6 +1,6 @@
 package folio
 
-import cats.Id
+import folio.FolioEffect.Id
 import weaver.SimpleIOSuite
 
 /** Regression: when two row models share the same `FIELD` enum and each provides a `KeysetField[FIELD, T]` for its own
@@ -16,23 +16,16 @@ object MultiRowKeysetSuite extends SimpleIOSuite:
   private val baseQuery: Query[TestField] = TestFixtures.queryWithIdSort.copy(limit = 2.items)
 
   pureTest("withPagination dispatches on concrete T when two KeysetField givens share the same FIELD"):
-    val rowResult: Either[FolioError.CursorDecodingError, Page[Row]] =
+    val rowPage: Page[Row] =
       Page.withPagination[Id, Row, TestField](
         baseQuery,
         _ => Vector(Row(1, "", "", "", None), Row(2, "", "", "", None), Row(3, "", "", "", None))
       )
-    val auditResult: Either[FolioError.CursorDecodingError, Page[AuditRow]] =
+    val auditPage: Page[AuditRow] =
       Page.withPagination[Id, AuditRow, TestField](
         baseQuery,
         _ => Vector(AuditRow(10, "alice"), AuditRow(11, "bob"), AuditRow(12, "carol"))
       )
-
-    val rowPage = rowResult match
-      case Right(page) => page
-      case Left(error) => sys.error(s"row pagination failed: $error")
-    val auditPage = auditResult match
-      case Right(page) => page
-      case Left(error) => sys.error(s"audit pagination failed: $error")
 
     expect.all(
       rowPage.data.map(_.id) == Seq(1L, 2L),

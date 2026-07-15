@@ -107,11 +107,7 @@ object IntegrationSuite extends weaver.IOSuite:
   // === Walk helpers (drive by folio's own cursors — no hardcoded cursor strings) ===
 
   private def page(session: Session[IO], query: Query[RowField]): IO[Page[Row]] =
-    Pagination
-      .withPagination[IO, Row, RowField](query, session, rowCodec)(select)
-      .flatMap:
-        case Right(resultPage) => IO.pure(resultPage)
-        case Left(error)       => IO.raiseError(new RuntimeException(s"unexpected cursor error: $error"))
+    Pagination.withPagination[IO, Row, RowField](query, session, rowCodec)(select)
 
   /** Follow `nextCursor` to the end; returns every page in visit order. Terminates when a page has no next cursor (a
     * finite dataset always reaches a short final fetch).
@@ -222,3 +218,35 @@ object IntegrationSuite extends weaver.IOSuite:
       expectedForwardData = List(List(row1, row2, row3, row4, row5, row6)),
       expectedBackwardData = Nil
     )
+
+  // === Effect-path error handling (no rows fetched; the session is untouched because both paths short-circuit) ===
+
+  // A cursor that cannot be decoded fails inside Page.withPagination before fetchRows runs, so the failure surfaces
+  // through folio-skunk's FolioEffect.raiseError bridge as a FolioError in IO.
+  test("malformed cursor is raised as a FolioError, not run as SQL"): session =>
+    val query = Query(
+      Set.empty[FilterBy[RowField]],
+      ListSet(RowField.Id.ascending),
+      2.items,
+      cursor = Some(Cursor("!! not base64 !!"))
+    )
+    page(session, query).attempt.map:
+      case Left(_: FolioError.CursorDecodingError) => success
+      case other                                   => failure(s"expected a CursorDecodingError, got $other")
+
+  // ADR 0005: buildSql must never emit truncated SQL. withPagination always pairs a Keyset position with Some(keyset),
+  // so this guard is unreachable through the public API; call fetchFromSession directly to confirm the Left is raised.
+  test("fetchFromSession raises when buildSql rejects a Keyset position without keyset metadata"): session =>
+    val resolvedQuery = ResolvedQuery[RowField](
+      Set.empty,
+      ListSet(RowField.Id.ascending),
+      10.items,
+      Position.Keyset(List(KeysetValue.LongV(1))),
+      Direction.Forward
+    )
+    Pagination
+      .fetchFromSession[IO, Row, RowField](resolvedQuery, session, rowCodec, select, keysetField = None)
+      .attempt
+      .map:
+        case Left(error) => expect(error.getMessage.contains("folio-skunk buildSql"))
+        case Right(rows) => failure(s"expected buildSql failure to raise, got $rows")

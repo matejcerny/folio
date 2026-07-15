@@ -1,6 +1,5 @@
 package folio
 
-import cats.data.Chain
 import cats.syntax.foldable.*
 import folio.CursorBytes.*
 import folio.FolioError.*
@@ -14,8 +13,8 @@ import weaver.scalacheck.Checkers
 
 object CursorBytesSuite extends SimpleIOSuite with Checkers:
 
-  private def runRead[A](bytes: Chain[Byte])(read: Read[A]): Either[CursorDecodingError, A] =
-    read.runA(ReaderState(bytes.toList.toArray, 0))
+  private def runRead[A](bytes: EncodedBytes)(read: Read[A]): Either[CursorDecodingError, A] =
+    read.runA(ReaderState(bytes.toArray, 0))
 
   private given cats.Show[OffsetDateTime] = cats.Show.fromToString
 
@@ -99,16 +98,16 @@ object CursorBytesSuite extends SimpleIOSuite with Checkers:
     val tooLarge = Int.MaxValue.toLong + 1L
     expect.sameL(
       CursorDecodingError.MalformedCursor("invalid string length"),
-      runRead(unsignedVarint(tooLarge) ++ Chain.fromSeq("abc".getBytes("UTF-8").toSeq))(readString)
+      runRead(unsignedVarint(tooLarge) ++ "abc".getBytes("UTF-8"))(readString)
     )
 
   pureTest("readString accepts length exactly Int.MaxValue but reports truncation when buffer is short"):
-    val payload = unsignedVarint(Int.MaxValue.toLong) ++ Chain.fromSeq("abc".getBytes("UTF-8").toSeq)
+    val payload = unsignedVarint(Int.MaxValue.toLong) ++ "abc".getBytes("UTF-8")
     expect.sameL(CursorDecodingError.MalformedCursor("truncated"), runRead(payload)(readString))
 
   pureTest("readString rejects negative-Long varint length"):
     // 10 bytes whose varint decodes to a negative Long
-    val negativeVarint = Chain.fromSeq((Array.fill(9)(0xff.toByte) :+ 0x01.toByte).toSeq)
+    val negativeVarint = (Array.fill(9)(0xff.toByte) :+ 0x01.toByte).toVector
     expect.sameL(
       CursorDecodingError.MalformedCursor("invalid string length"),
       runRead(negativeVarint)(readString)

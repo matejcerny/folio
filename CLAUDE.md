@@ -4,7 +4,7 @@ Scala 3 cursor-based pagination library.
 
 ## Modules
 
-- `core` — main library (`folio-core`), no runtime dependencies (weaver-cats for tests only)
+- `core` — main library (`folio-core`), no runtime dependencies (Weaver/Cats are test-only)
 - `example` — usage example, not published
 
 ## Key types
@@ -43,9 +43,13 @@ When `KeysetField[FIELD, ?]` is not provided:
 
 ## Page assembly
 
-`Page.withPagination[F[_]: Applicative, T, FIELD](query, fetchRows)` is the entry point. The caller supplies a
+`Page.withPagination[F[_]: FolioEffect, T, FIELD](query, fetchRows)` is the entry point. The caller supplies a
 `fetchRows: ResolvedQuery[FIELD] => F[Seq[T]]` that fetches `limit + 1` rows (use `Limit.fetchLimit` from the
-`ResolvedQuery`); the extra row is dropped and used for hasMore detection.
+`ResolvedQuery`); the extra row is dropped and used for hasMore detection. `FolioEffect` deliberately exposes only
+`map` and `raiseError`, keeping `folio-core` independent of Cats Effect, ZIO, Kyo, and `Future`. The result is
+`F[Page[T]]`; cursor failures are raised as `FolioError` in `F` rather than returned as a nested `Either`. Synchronous
+callers use `FolioEffect.Id` (which throws on failure); effectful callers provide the tiny native instance (driver
+modules should hide that bridge). Pure decoding APIs continue to return `Either`.
 
 ## Code style
 

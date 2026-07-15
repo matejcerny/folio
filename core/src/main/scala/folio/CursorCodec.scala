@@ -1,6 +1,5 @@
 package folio
 
-import cats.syntax.either.*
 import folio.FolioError.CursorDecodingError
 
 import java.util.Base64
@@ -16,5 +15,5 @@ object CursorCodec:
       Base64.getUrlEncoder.withoutPadding.encodeToString(bytes)
 
     def decode(cursor: Cursor): Either[CursorDecodingError, Array[Byte]] =
-      Try(Base64.getUrlDecoder.decode(cursor.value)).toEither
-        .leftMap(_ => CursorDecodingError.MalformedCursor("not valid base64"))
+      Try(Base64.getUrlDecoder.decode(cursor.value)).toEither.left
+        .map(_ => CursorDecodingError.MalformedCursor("not valid base64"))

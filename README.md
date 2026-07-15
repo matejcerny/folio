@@ -18,4 +18,4 @@ Work-in-progress integrations with:
   - http4s
 - database layer:
   - Doobie
-  - Skunk
+  - Skunk ⏳

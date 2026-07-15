@@ -1,5 +1,6 @@
 package folio
 
+/** Base error raised through [[FolioEffect]] by effectful Folio APIs and returned as `Left` by pure validation APIs. */
 sealed abstract class FolioError(message: String) extends Exception(message, null, true, false)
 
 object FolioError:

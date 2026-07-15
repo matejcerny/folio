@@ -1,10 +1,11 @@
 package folio
 
 import scala.collection.immutable.ListSet
+import scala.concurrent.{ ExecutionContext, Future }
+import scala.util.{ Failure, Success, Try }
 
-import cats.Id
-import cats.data.Writer
 import cats.syntax.foldable.*
+import folio.FolioEffect.Id
 import folio.FolioError.CursorDecodingError
 import TestFixtures.*
 import folio.KeysetSyntax.keysetOf
@@ -37,29 +38,33 @@ object PagePaginationSuite extends SimpleIOSuite:
     base.copy(cursor = Some(Cursor.encode(current, base)))
 
   private inline def pageOrFail[FIELD: FieldSchema](rowsPlusOne: Seq[Row], query: Query[FIELD]): Page[Row] =
-    Page.withPagination[Id, Row, FIELD](query, _ => rowsPlusOne) match
-      case Right(page) => page
-      case Left(error) => sys.error(s"unexpected: $error")
+    Page.withPagination[Id, Row, FIELD](query, _ => rowsPlusOne)
 
   private inline def pageWith[FIELD: FieldSchema, T](
       fetch: ResolvedQuery[FIELD] => Seq[T],
       query: Query[FIELD]
   ): Page[T] =
-    Page.withPagination[Id, T, FIELD](query, fetch) match
-      case Right(page) => page
-      case Left(error) => sys.error(s"unexpected: $error")
+    Page.withPagination[Id, T, FIELD](query, fetch)
 
   private inline def pageCapturing[FIELD: FieldSchema, T](
       fetch: ResolvedQuery[FIELD] => Seq[T],
       query: Query[FIELD]
   ): (List[ResolvedQuery[FIELD]], Page[T]) =
-    type Captured[A] = Writer[List[ResolvedQuery[FIELD]], A]
-    val capturingFetch: ResolvedQuery[FIELD] => Captured[Seq[T]] = resolved => Writer(List(resolved), fetch(resolved))
-    val (captured, result) = Page.withPagination[Captured, T, FIELD](query, capturingFetch).run
-    val page = result match
-      case Right(page) => page
-      case Left(error) => sys.error(s"unexpected: $error")
+    type Captured[A] = (List[ResolvedQuery[FIELD]], A)
+    given FolioEffect[Captured] with
+      def map[A, B](effect: Captured[A])(transform: A => B): Captured[B] =
+        (effect._1, transform(effect._2))
+      def raiseError[A](error: FolioError): Captured[A] = throw error
+
+    val capturingFetch: ResolvedQuery[FIELD] => Captured[Seq[T]] = resolved => (List(resolved), fetch(resolved))
+    val (captured, page) = Page.withPagination[Captured, T, FIELD](query, capturingFetch)
     (captured, page)
+
+  private def raisedCursorError(result: => Any): CursorDecodingError =
+    Try(result) match
+      case Failure(error: CursorDecodingError) => error
+      case Failure(error)                      => sys.error(s"expected CursorDecodingError, got $error")
+      case Success(_)                          => sys.error("expected CursorDecodingError, but pagination succeeded")
 
   // ---------- keyset ----------
 
@@ -517,26 +522,37 @@ object PagePaginationSuite extends SimpleIOSuite:
       Position.Keyset(List(KeysetValue.StringV("ignored"), KeysetValue.LongV(5L)))
     val current = DecodedCursor(Direction.Forward, keysetPosition)
     val query = queryWithCurrent(offsetQuery, current)
-    val result = Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected"))
-    expect.sameL(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"), result)
+    val error = raisedCursorError(Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected")))
+    expect.same(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"), error)
 
   pureTest("mismatch: keyset cursor against offset-only query (no KeysetField) is rejected"):
     val current = DecodedCursor(Direction.Forward, keysetOf(5L))
     val query = queryWithCurrent(offsetOnlyQuery, current)
-    val result = Page.withPagination[Id, EventRow, TestFieldNoId](query, _ => sys.error("fetch not expected"))
-    expect.sameL(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"), result)
+    val error = raisedCursorError(
+      Page.withPagination[Id, EventRow, TestFieldNoId](query, _ => sys.error("fetch not expected"))
+    )
+    expect.same(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"), error)
 
   pureTest("mismatch: offset cursor against keyset query (id sort) is rejected"):
     val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(10L))
     val query = queryWithCurrent(keysetQuery, current)
-    val result = Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected"))
-    expect.sameL(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"), result)
+    val error = raisedCursorError(Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected")))
+    expect.same(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"), error)
 
   pureTest("mismatch: offset cursor against no-sort keyset default is rejected"):
     val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(10L))
     val query = queryWithCurrent(TestFixtures.emptyQueryWithId.copy(limit = limit), current)
-    val result = Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected"))
-    expect.sameL(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"), result)
+    val error = raisedCursorError(Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected")))
+    expect.same(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"), error)
+
+  pureTest("mismatch: Future raises the cursor failure in its native error channel"):
+    given ExecutionContext = ExecutionContext.parasitic
+    val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(10L))
+    val query = queryWithCurrent(keysetQuery, current)
+    val expected = CursorDecodingError.IncompatibleCursor("cursor strategy does not match query")
+    val result: Future[Page[Row]] =
+      Page.withPagination[Future, Row, TestField](query, _ => Future.failed(new AssertionError("fetch not expected")))
+    expect.same(Some(Failure(expected)), result.value)
 
   // ---------- non-id keyset (multi-field cursor) ----------
 

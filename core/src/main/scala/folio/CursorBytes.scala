@@ -1,7 +1,5 @@
 package folio
 
-import cats.data.{ Chain, StateT }
-import cats.syntax.either.*
 import folio.FolioError.*
 
 import java.nio.charset.StandardCharsets
@@ -11,33 +9,52 @@ import scala.util.Try
 
 private[folio] object CursorBytes:
 
-  type Read[A] = StateT[[X] =>> Either[CursorDecodingError, X], ReaderState, A]
   case class ReaderState(bytes: Array[Byte], index: Int)
 
-  extension [A](either: Either[CursorDecodingError, A]) def liftRead: Read[A] = StateT.liftF(either)
+  case class Read[A](run: ReaderState => Either[CursorDecodingError, (ReaderState, A)]):
+    def map[B](transform: A => B): Read[B] =
+      Read: state =>
+        run(state).map: (nextState, value) =>
+          (nextState, transform(value))
 
-  private val empty: Chain[Byte] = Chain.empty
+    def flatMap[B](transform: A => Read[B]): Read[B] =
+      Read: state =>
+        run(state).flatMap: (nextState, value) =>
+          transform(value).run(nextState)
 
-  def byte(value: Byte): Chain[Byte] = Chain.one(value)
+    def runA(initialState: ReaderState): Either[CursorDecodingError, A] =
+      run(initialState).map(_._2)
 
-  def intBigEndian(value: Int): Chain[Byte] =
-    Chain(
+  object Read:
+    def pure[A](value: A): Read[A] = Read(state => Right((state, value)))
+
+  extension [A](either: Either[CursorDecodingError, A])
+    def liftRead: Read[A] = Read(state => either.map(value => (state, value)))
+
+  type EncodedBytes = Vector[Byte]
+
+  private val empty: EncodedBytes = Vector.empty
+
+  def byte(value: Byte): EncodedBytes = Vector(value)
+
+  def intBigEndian(value: Int): EncodedBytes =
+    Vector(
       ((value >>> 24) & 0xff).toByte,
       ((value >>> 16) & 0xff).toByte,
       ((value >>> 8) & 0xff).toByte,
       (value & 0xff).toByte
     )
 
-  def unsignedVarint(value: Long): Chain[Byte] =
-    @tailrec def loop(remaining: Long, acc: Chain[Byte]): Chain[Byte] =
-      if (remaining & ~0x7fL) == 0L then acc :+ (remaining & 0x7f).toByte
-      else loop(remaining >>> 7, acc :+ ((remaining & 0x7f) | 0x80).toByte)
+  def unsignedVarint(value: Long): EncodedBytes =
+    @tailrec def loop(remaining: Long, accumulated: EncodedBytes): EncodedBytes =
+      if (remaining & ~0x7fL) == 0L then accumulated :+ (remaining & 0x7f).toByte
+      else loop(remaining >>> 7, accumulated :+ ((remaining & 0x7f) | 0x80).toByte)
     loop(value, empty)
 
   def zigzagEncode(value: Long): Long = (value << 1) ^ (value >> 63)
   def zigzagDecode(value: Long): Long = (value >>> 1) ^ -(value & 1L)
 
-  def intBytes(value: Int): Chain[Byte] = unsignedVarint(zigzagEncode(value.toLong))
+  def intBytes(value: Int): EncodedBytes = unsignedVarint(zigzagEncode(value.toLong))
 
   def readInt: Read[Int] =
     readUnsignedVarint.flatMap: encoded =>
@@ -50,14 +67,14 @@ private[folio] object CursorBytes:
         )
         .liftRead
 
-  def longBytes(value: Long): Chain[Byte] = unsignedVarint(zigzagEncode(value))
+  def longBytes(value: Long): EncodedBytes = unsignedVarint(zigzagEncode(value))
 
   def readLong: Read[Long] =
     readUnsignedVarint.map(zigzagDecode)
 
-  def stringBytes(value: String): Chain[Byte] =
+  def stringBytes(value: String): EncodedBytes =
     val utf8 = value.getBytes(StandardCharsets.UTF_8)
-    unsignedVarint(utf8.length.toLong) ++ Chain.fromSeq(utf8.toSeq)
+    unsignedVarint(utf8.length.toLong) ++ utf8
 
   def readString: Read[String] =
     for
@@ -73,7 +90,7 @@ private[folio] object CursorBytes:
       CursorDecodingError.MalformedCursor("invalid string length")
     )
 
-  def timestampBytes(value: OffsetDateTime): Chain[Byte] =
+  def timestampBytes(value: OffsetDateTime): EncodedBytes =
     longBytes(value.toEpochSecond) ++
       unsignedVarint(value.getNano.toLong) ++
       longBytes(value.getOffset.getTotalSeconds.toLong)
@@ -114,11 +131,11 @@ private[folio] object CursorBytes:
     Try(
       OffsetDateTime
         .ofInstant(Instant.ofEpochSecond(epochSecond, nano.toLong), ZoneOffset.ofTotalSeconds(offsetSeconds))
-    ).toEither
-      .leftMap(_ => CursorDecodingError.MalformedCursor("malformed timestamp"))
+    ).toEither.left
+      .map(_ => CursorDecodingError.MalformedCursor("malformed timestamp"))
 
   def readByte: Read[Byte] =
-    StateT: state =>
+    Read: state =>
       Either.cond(
         state.index < state.bytes.length,
         (state.copy(index = state.index + 1), state.bytes(state.index)),
@@ -126,7 +143,7 @@ private[folio] object CursorBytes:
       )
 
   def readBytes(count: Int): Read[Array[Byte]] =
-    StateT: state =>
+    Read: state =>
       Either.cond(
         count >= 0 && count <= state.bytes.length - state.index,
         (state.copy(index = state.index + count), state.bytes.slice(state.index, state.index + count)),
@@ -140,7 +157,7 @@ private[folio] object CursorBytes:
       ) & 0xff)
 
   def readUnsignedVarint: Read[Long] =
-    StateT: initialState =>
+    Read: initialState =>
       @tailrec def loop(
           state: ReaderState,
           shift: Int,
@@ -158,6 +175,6 @@ private[folio] object CursorBytes:
       loop(initialState, 0, 0L, 0)
 
   def requireExhausted: Read[Unit] =
-    StateT: state =>
+    Read: state =>
       val remaining = state.bytes.length - state.index
       Either.cond(remaining == 0, (state, ()), CursorDecodingError.MalformedCursor("trailing data after parse"))

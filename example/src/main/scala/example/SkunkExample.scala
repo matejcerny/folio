@@ -39,14 +39,12 @@ object SkunkExample extends IOApp.Simple:
       .withPagination[IO, Message, MessageField](query, session, messageCodec)(
         sql"SELECT id, enqueued_at, last_read_at FROM messages".apply(Void)
       )
-      .flatMap:
-        case Left(error)        => IO.println(s"Cursor error: $error")
-        case Right(currentPage) =>
-          IO.println(s"Page $pageNumber: ${currentPage.data.map(message => s"id=${message.id}").mkString(", ")}") *>
-            (currentPage.nextCursor match
-              case Some(nextCursor) =>
-                walkForward(session, query.copy(cursor = Some(nextCursor)), pageNumber + 1)
-              case None => IO.println("End of results."))
+      .flatMap: currentPage =>
+        IO.println(s"Page $pageNumber: ${currentPage.data.map(message => s"id=${message.id}").mkString(", ")}") *>
+          (currentPage.nextCursor match
+            case Some(nextCursor) =>
+              walkForward(session, query.copy(cursor = Some(nextCursor)), pageNumber + 1)
+            case None => IO.println("End of results."))
 
   // --- test data setup ---
 

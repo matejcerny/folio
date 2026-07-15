@@ -1,8 +1,5 @@
 package folio
 
-import cats.data.Chain
-import cats.syntax.either.*
-import cats.syntax.traverse.*
 import folio.CursorBytes.*
 import folio.FolioError.*
 
@@ -72,7 +69,7 @@ object Cursor:
       codec: CursorCodec
   ): Cursor =
     val payload = byte(buildFlags(decoded)) ++ intBigEndian(fingerprint) ++ positionBytes(decoded.position)
-    codec.encode(payload.toList.toArray)
+    codec.encode(payload.toArray)
 
   private[folio] def decodeWithFingerprint[FIELD: FieldSchema](
       cursor: Cursor,
@@ -187,7 +184,7 @@ object Cursor:
   private def decodeDirection(flags: Byte): Direction =
     if flags.isSet(flagDirection) then Direction.Backward else Direction.Forward
 
-  private def keysetValueBytes(value: KeysetValue): Chain[Byte] = value match
+  private def keysetValueBytes(value: KeysetValue): EncodedBytes = value match
     case KeysetValue.IntV(intValue)             => byte(tagIntV) ++ intBytes(intValue)
     case KeysetValue.LongV(longValue)           => byte(tagLongV) ++ longBytes(longValue)
     case KeysetValue.StringV(stringValue)       => byte(tagStringV) ++ stringBytes(stringValue)
@@ -204,17 +201,20 @@ object Cursor:
       case _               => Left(CursorDecodingError.MalformedCursor("unknown keyset value type")).liftRead
 
   private def readKeysetValues(count: Int): Read[List[KeysetValue]] =
-    List.fill(count)(readKeysetValue).sequence
+    List
+      .fill(count)(readKeysetValue)
+      .foldRight(Read.pure(List.empty[KeysetValue])): (readValue, readValues) =>
+        readValue.flatMap(value => readValues.map(value :: _))
 
-  private def positionBytes(position: Position): Chain[Byte] = position match
+  private def positionBytes(position: Position): EncodedBytes = position match
     case Position.Offset(offset)       => unsignedVarint(offset)
     case Position.Keyset(keysetValues) =>
       unsignedVarint(keysetValues.size.toLong) ++
-        Chain.fromSeq(keysetValues).flatMap(keysetValueBytes)
+        keysetValues.flatMap(keysetValueBytes)
 
   private val readOffsetPosition: Read[Position] =
     readUnsignedVarint.flatMap: value =>
-      Position.Offset(value).leftMap(_ => CursorDecodingError.MalformedCursor("negative offset")).liftRead
+      Position.Offset(value).left.map(_ => CursorDecodingError.MalformedCursor("negative offset")).liftRead
 
   private val readKeysetPosition: Read[Position] =
     readUnsignedVarint.flatMap: count =>

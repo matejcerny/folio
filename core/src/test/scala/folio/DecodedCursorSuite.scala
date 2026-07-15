@@ -1,5 +1,6 @@
 package folio
 
+import cats.syntax.foldable.*
 import weaver.SimpleIOSuite
 
 object DecodedCursorSuite extends SimpleIOSuite:
@@ -38,3 +39,17 @@ object DecodedCursorSuite extends SimpleIOSuite:
     val roundtrip = cursor.decode(query)
 
     expect.same(Right(decoded), roundtrip)
+
+  pureTest("isFirst: true for a forward first-page anchor, keyset or offset"):
+    List(
+      expect(DecodedCursor(Direction.Forward, Position.Keyset.First).isFirst),
+      expect(DecodedCursor(Direction.Forward, Position.Offset.First).isFirst)
+    ).combineAll
+
+  pureTest("isFirst: false for backward direction or a non-first anchor"):
+    List(
+      expect(!DecodedCursor(Direction.Backward, Position.Keyset.First).isFirst),
+      expect(!DecodedCursor(Direction.Backward, Position.Offset.First).isFirst),
+      expect(!DecodedCursor(Direction.Forward, Position.Offset.unsafe(5)).isFirst),
+      expect(!DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.LongV(1)))).isFirst)
+    ).combineAll

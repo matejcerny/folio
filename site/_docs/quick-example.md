@@ -38,12 +38,7 @@ given KeysetField[MessageField, Message] = KeysetField(MessageField.Id, _.id)
 
   // Build a Page of results using the pagination helper.
   // With KeysetField in scope and primary sort = id, this picks keyset.
-  Page
-    .withPagination[cats.Id, Message, MessageField](query, _ => rows)
-    .fold(
-      error => println(s"Error:     $error"),
-      page =>
-        println(s"Next:      ${page.nextCursor.map(_.value)}")
-        println(s"Previous:  ${page.previousCursor.map(_.value)}")
-    )
+  val page = Page.withPagination[FolioEffect.Id, Message, MessageField](query, _ => rows)
+  println(s"Next:      ${page.nextCursor.map(_.value)}")
+  println(s"Previous:  ${page.previousCursor.map(_.value)}")
 ```

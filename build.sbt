@@ -5,7 +5,6 @@ ThisBuild / startYear := Some(2026)
 ThisBuild / licenses := Seq(License.MIT)
 
 // === VERSIONS ===
-val CatsCoreV = "2.13.0"
 val WeaverV = "0.12.0"
 val SkunkV = "1.0.0"
 
@@ -23,7 +22,6 @@ lazy val core = project
   .settings(
     name := "folio-core",
     libraryDependencies ++= Seq(
-      "org.typelevel" %% "cats-core" % CatsCoreV,
       "org.typelevel" %% "weaver-cats" % WeaverV % Test,
       "org.typelevel" %% "weaver-scalacheck" % WeaverV % Test
     )
