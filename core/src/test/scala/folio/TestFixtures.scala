@@ -1,7 +1,5 @@
 package folio
 
-import scala.collection.immutable.ListSet
-
 enum TestField derives FieldSchema.SnakeCase:
   case Id, Name, CreatedAt, Description, LastSeen
 
@@ -34,16 +32,15 @@ object TestFixtures:
 
   val emptyQueryNoId: Query[TestFieldNoId] = Query.empty[TestFieldNoId]
 
-  val queryWithIdSort: Query[TestField] =
-    Query.empty[TestField].copy(sortBys = ListSet(TestField.Id.ascending))
+  val queryWithIdOrdering: Query[TestField] =
+    Query.empty[TestField].orderBy(TestField.Id.ascending)
 
   val fullyPopulatedQuery: Query[TestField] =
     Query(
       filters = Set(FilterBy.ExactMatch(TestField.Name, "alice")),
       cursor = None,
-      limit = 20.items,
-      sortBys = ListSet(TestField.CreatedAt.descending, TestField.Id.ascending)
-    )
+      limit = 20.items
+    ).orderBy(TestField.CreatedAt.descending, TestField.Id.ascending)
 
   val rowExtract: (TestField, Row) => Option[String] = (field, row) =>
     field match
@@ -58,7 +55,7 @@ object TestFixtures:
       case TestFieldNoId.Timestamp => Some(row.timestamp)
       case TestFieldNoId.Source    => Some(row.source)
 
-  // description == createdAt so sort-by-Description orders rows the same as sort-by-CreatedAt;
+  // description == createdAt so order-by-Description orders rows the same as order-by-CreatedAt;
   // existing realistic-data assertions stay green when offset queries switch to the unregistered Description field.
   // lastSeen is None for ids 5..9 so paginating by LastSeen exercises the Absent boundary.
   val rows: Vector[Row] = Vector(

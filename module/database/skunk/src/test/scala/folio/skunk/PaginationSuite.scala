@@ -2,8 +2,6 @@ package folio.skunk
 
 import java.time.OffsetDateTime
 
-import scala.collection.immutable.ListSet
-
 import cats.syntax.foldable.*
 import skunk.AppliedFragment
 import skunk.Void
@@ -44,12 +42,12 @@ object PaginationSuite extends SimpleIOSuite:
   private val instant: OffsetDateTime = OffsetDateTime.parse("2024-01-01T00:00:00Z")
 
   private def resolved(
-      sortBys: ListSet[SortBy[MessageField]],
+      ordering: Vector[OrderBy[MessageField]],
       position: Position,
       direction: Direction = Direction.Forward,
       limit: Limit = 10.items
   ): ResolvedQuery[MessageField] =
-    ResolvedQuery(Set.empty, sortBys, limit, position, direction)
+    ResolvedQuery(Set.empty, ordering, limit, position, direction)
 
   private val messageKeyset: KeysetField[MessageField, Message] = summon
 
@@ -63,10 +61,10 @@ object PaginationSuite extends SimpleIOSuite:
       case Right(applied) => applied.fragment.encoder.types.map(_.name)
       case Left(error)    => List(s"buildSql failed: $error")
 
-  // === Single non-absentable cursor field (sort by id): all four strict-step rows ===
+  // === Single non-absentable cursor field (order by id): all four strict-step rows ===
 
   pureTest("ASC forward: strict `>`, ORDER BY ASC NULLS LAST"):
-    val query = resolved(ListSet(MessageField.Id.ascending), Position.Keyset(List(KeysetValue.LongV(5))))
+    val query = resolved(Vector(MessageField.Id.ascending), Position.Keyset(List(KeysetValue.LongV(5))))
     List(
       expect.same(
         """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" > $1) ORDER BY usersql."id" ASC NULLS LAST LIMIT $2""",
@@ -76,7 +74,7 @@ object PaginationSuite extends SimpleIOSuite:
     ).combineAll
 
   pureTest("DESC forward: strict `<`, ORDER BY DESC NULLS LAST"):
-    val query = resolved(ListSet(MessageField.Id.descending), Position.Keyset(List(KeysetValue.LongV(5))))
+    val query = resolved(Vector(MessageField.Id.descending), Position.Keyset(List(KeysetValue.LongV(5))))
     expect.same(
       """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" < $1) ORDER BY usersql."id" DESC NULLS LAST LIMIT $2""",
       sqlOf(query)
@@ -84,7 +82,7 @@ object PaginationSuite extends SimpleIOSuite:
 
   pureTest("ASC backward: strict `<`, ORDER BY DESC NULLS FIRST"):
     val query =
-      resolved(ListSet(MessageField.Id.ascending), Position.Keyset(List(KeysetValue.LongV(5))), Direction.Backward)
+      resolved(Vector(MessageField.Id.ascending), Position.Keyset(List(KeysetValue.LongV(5))), Direction.Backward)
     expect.same(
       """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" < $1) ORDER BY usersql."id" DESC NULLS FIRST LIMIT $2""",
       sqlOf(query)
@@ -92,17 +90,17 @@ object PaginationSuite extends SimpleIOSuite:
 
   pureTest("DESC backward: strict `>`, ORDER BY ASC NULLS FIRST"):
     val query =
-      resolved(ListSet(MessageField.Id.descending), Position.Keyset(List(KeysetValue.LongV(5))), Direction.Backward)
+      resolved(Vector(MessageField.Id.descending), Position.Keyset(List(KeysetValue.LongV(5))), Direction.Backward)
     expect.same(
       """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" > $1) ORDER BY usersql."id" ASC NULLS FIRST LIMIT $2""",
       sqlOf(query)
     )
 
-  // === Absentable cursor field (sort by last_read_at), present anchor: all four strict-step rows ===
+  // === Absentable cursor field (order by last_read_at), present anchor: all four strict-step rows ===
 
   pureTest("absentable ASC forward present: `> v OR IS NULL`, ORDER BY ASC NULLS LAST, id ASC"):
     val query = resolved(
-      ListSet(MessageField.LastReadAt.ascending),
+      Vector(MessageField.LastReadAt.ascending),
       Position.Keyset(List(KeysetValue.StringV("t"), KeysetValue.LongV(5)))
     )
     List(
@@ -115,7 +113,7 @@ object PaginationSuite extends SimpleIOSuite:
 
   pureTest("absentable DESC forward present: `< v OR IS NULL`, ORDER BY DESC NULLS LAST, id ASC"):
     val query = resolved(
-      ListSet(MessageField.LastReadAt.descending),
+      Vector(MessageField.LastReadAt.descending),
       Position.Keyset(List(KeysetValue.StringV("t"), KeysetValue.LongV(5)))
     )
     expect.same(
@@ -125,7 +123,7 @@ object PaginationSuite extends SimpleIOSuite:
 
   pureTest("absentable ASC backward present: `< v`, ORDER BY DESC NULLS FIRST, id DESC"):
     val query = resolved(
-      ListSet(MessageField.LastReadAt.ascending),
+      Vector(MessageField.LastReadAt.ascending),
       Position.Keyset(List(KeysetValue.StringV("t"), KeysetValue.LongV(5))),
       Direction.Backward
     )
@@ -136,7 +134,7 @@ object PaginationSuite extends SimpleIOSuite:
 
   pureTest("absentable DESC backward present: `> v`, ORDER BY ASC NULLS FIRST, id DESC"):
     val query = resolved(
-      ListSet(MessageField.LastReadAt.descending),
+      Vector(MessageField.LastReadAt.descending),
       Position.Keyset(List(KeysetValue.StringV("t"), KeysetValue.LongV(5))),
       Direction.Backward
     )
@@ -149,7 +147,7 @@ object PaginationSuite extends SimpleIOSuite:
 
   pureTest("absentable ASC forward absent: strict collapses to FALSE, no bound param for the absent slot"):
     val query = resolved(
-      ListSet(MessageField.LastReadAt.ascending),
+      Vector(MessageField.LastReadAt.ascending),
       Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5)))
     )
     List(
@@ -162,7 +160,7 @@ object PaginationSuite extends SimpleIOSuite:
 
   pureTest("absentable DESC forward absent: strict collapses to FALSE, ORDER BY DESC NULLS LAST"):
     val query = resolved(
-      ListSet(MessageField.LastReadAt.descending),
+      Vector(MessageField.LastReadAt.descending),
       Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5)))
     )
     expect.same(
@@ -172,7 +170,7 @@ object PaginationSuite extends SimpleIOSuite:
 
   pureTest("absentable ASC backward absent: strict becomes IS NOT NULL"):
     val query = resolved(
-      ListSet(MessageField.LastReadAt.ascending),
+      Vector(MessageField.LastReadAt.ascending),
       Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5))),
       Direction.Backward
     )
@@ -183,7 +181,7 @@ object PaginationSuite extends SimpleIOSuite:
 
   pureTest("absentable DESC backward absent: strict becomes IS NOT NULL, ORDER BY ASC NULLS FIRST"):
     val query = resolved(
-      ListSet(MessageField.LastReadAt.descending),
+      Vector(MessageField.LastReadAt.descending),
       Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5))),
       Direction.Backward
     )
@@ -192,11 +190,11 @@ object PaginationSuite extends SimpleIOSuite:
       sqlOf(query)
     )
 
-  // === Equality-rung chaining across multiple sort fields ===
+  // === Equality-rung chaining across multiple order fields ===
 
-  pureTest("multi sort field: equality rungs chain, id appended last"):
+  pureTest("multi order field: equality rungs chain, id appended last"):
     val query = resolved(
-      ListSet(MessageField.EnqueuedAt.descending, MessageField.LastReadAt.ascending),
+      Vector(MessageField.EnqueuedAt.descending, MessageField.LastReadAt.ascending),
       Position.Keyset(List(KeysetValue.TimestampV(instant), KeysetValue.StringV("x"), KeysetValue.LongV(5)))
     )
     List(
@@ -207,11 +205,11 @@ object PaginationSuite extends SimpleIOSuite:
       expect.same(List("timestamptz", "timestamptz", "text", "timestamptz", "text", "int8", "int4"), typesOf(query))
     ).combineAll
 
-  // === Appended id appears in ORDER BY when id is not a sort field ===
+  // === Appended id appears in ORDER BY when id is not an order field ===
 
-  pureTest("appended id tiebreaker present in ORDER BY (id not a sort field)"):
+  pureTest("appended id tiebreaker present in ORDER BY (id not an order field)"):
     val query = resolved(
-      ListSet(MessageField.EnqueuedAt.descending),
+      Vector(MessageField.EnqueuedAt.descending),
       Position.Keyset(List(KeysetValue.TimestampV(instant), KeysetValue.LongV(5)))
     )
     expect.same(
@@ -220,7 +218,7 @@ object PaginationSuite extends SimpleIOSuite:
     )
 
   pureTest("first page (empty anchor): no WHERE, ORDER BY still includes appended id"):
-    val query = resolved(ListSet(MessageField.EnqueuedAt.descending), Position.Keyset.First)
+    val query = resolved(Vector(MessageField.EnqueuedAt.descending), Position.Keyset.First)
     List(
       expect.same(
         """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC LIMIT $1""",
@@ -232,7 +230,7 @@ object PaginationSuite extends SimpleIOSuite:
   // === Offset branch ===
 
   pureTest("offset branch: OFFSET $n LIMIT $m, no keyset predicate, id tiebreaker appended to ORDER BY"):
-    val query = resolved(ListSet(MessageField.EnqueuedAt.descending), Position.Offset.unsafe(40))
+    val query = resolved(Vector(MessageField.EnqueuedAt.descending), Position.Offset.unsafe(40))
     List(
       expect.same(
         """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC OFFSET $1 LIMIT $2""",
@@ -241,8 +239,8 @@ object PaginationSuite extends SimpleIOSuite:
       expect.same(List("int8", "int4"), typesOf(query))
     ).combineAll
 
-  pureTest("offset branch with no sort fields (KeysetField present): id tiebreaker still yields a total order"):
-    val query = resolved(ListSet.empty, Position.Offset.unsafe(0))
+  pureTest("offset branch with no order fields (KeysetField present): id tiebreaker still yields a total order"):
+    val query = resolved(Vector.empty, Position.Offset.unsafe(0))
     List(
       expect.same(
         """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."id" ASC OFFSET $1 LIMIT $2""",
@@ -251,8 +249,8 @@ object PaginationSuite extends SimpleIOSuite:
       expect.same(List("int8", "int4"), typesOf(query))
     ).combineAll
 
-  pureTest("offset branch with no sort fields and no KeysetField: genuine no-ORDER BY form preserved"):
-    val query = resolved(ListSet.empty, Position.Offset.unsafe(0))
+  pureTest("offset branch with no order fields and no KeysetField: genuine no-ORDER BY form preserved"):
+    val query = resolved(Vector.empty, Position.Offset.unsafe(0))
     expect.same(
       Right("""SELECT * FROM (SELECT * FROM messages) AS usersql OFFSET $1 LIMIT $2"""),
       Pagination.buildSql(query, select, None).map(_.fragment.sql)
@@ -262,7 +260,7 @@ object PaginationSuite extends SimpleIOSuite:
 
   pureTest("KeysetValue maps to the hard-coded Skunk codec; Absent binds no parameter"):
     def bindTypesFor(value: KeysetValue): List[String] =
-      typesOf(resolved(ListSet(MessageField.Id.ascending), Position.Keyset(List(value))))
+      typesOf(resolved(Vector(MessageField.Id.ascending), Position.Keyset(List(value))))
     List(
       expect.same(List("int4", "int4"), bindTypesFor(KeysetValue.IntV(7))),
       expect.same(List("int8", "int4"), bindTypesFor(KeysetValue.LongV(7))),
@@ -276,7 +274,7 @@ object PaginationSuite extends SimpleIOSuite:
   pureTest("identifiers are double-quoted; embedded quotes doubled; reserved words safe"):
     val query = ResolvedQuery[QuoteField](
       Set.empty,
-      ListSet(QuoteField.Plain.ascending, QuoteField.Reserved.ascending, QuoteField.Weird.ascending),
+      Vector(QuoteField.Plain.ascending, QuoteField.Reserved.ascending, QuoteField.Weird.ascending),
       10.items,
       Position.Offset.unsafe(0),
       Direction.Forward
@@ -293,7 +291,7 @@ object PaginationSuite extends SimpleIOSuite:
   pureTest("parameterized user SELECT: its parameters precede folio's, placeholders renumber"):
     val paramSelect = sql"SELECT * FROM messages WHERE tenant = $int8".apply(99L)
     val applied = Pagination.buildSql(
-      resolved(ListSet(MessageField.Id.ascending), Position.Keyset(List(KeysetValue.LongV(5)))),
+      resolved(Vector(MessageField.Id.ascending), Position.Keyset(List(KeysetValue.LongV(5)))),
       paramSelect,
       Some(messageKeyset)
     )
@@ -310,30 +308,56 @@ object PaginationSuite extends SimpleIOSuite:
   // === Contract: a keyset position requires the KeysetField metadata ===
 
   pureTest("Position.Keyset paired with keyset = None returns Left, never truncated SQL"):
-    val query = resolved(ListSet(MessageField.Id.ascending), Position.Keyset(List(KeysetValue.LongV(5))))
+    val query = resolved(Vector(MessageField.Id.ascending), Position.Keyset(List(KeysetValue.LongV(5))))
     expect.same(
-      Left("Position.Keyset requires Some(keysetField); pass the KeysetField used to resolve the query"),
+      Left(
+        FolioError.InvalidQuery(
+          "Position.Keyset requires Some(keysetField); pass the KeysetField used to resolve the query"
+        )
+      ),
       Pagination.buildSql(query, select, None).map(_.fragment.sql)
     )
 
   pureTest("keyset anchor with too few values (missing id tiebreaker) returns Left, never truncated SQL"):
-    // sort by EnqueuedAt -> cursor fields [EnqueuedAt, id]; a single-value anchor would drop the id tiebreaker rung.
+    // order by EnqueuedAt -> cursor fields [EnqueuedAt, id]; a single-value anchor would drop the id tiebreaker rung.
     val query = resolved(
-      ListSet(MessageField.EnqueuedAt.ascending),
+      Vector(MessageField.EnqueuedAt.ascending),
       Position.Keyset(List(KeysetValue.TimestampV(instant)))
     )
     expect.same(
-      Left("Keyset anchor arity mismatch: 2 cursor field(s) but 1 anchor value(s)"),
+      Left(FolioError.InvalidQuery("Keyset anchor arity mismatch: 2 cursor field(s) but 1 anchor value(s)")),
       Pagination.buildSql(query, select, Some(messageKeyset)).map(_.fragment.sql)
     )
 
   pureTest("keyset anchor with extra values returns Left, never silently ignored"):
-    // sort by id -> cursor fields [id]; a second value has no rung and would be dropped by zip.
+    // order by id -> cursor fields [id]; a second value has no rung and would be dropped by zip.
     val query = resolved(
-      ListSet(MessageField.Id.ascending),
+      Vector(MessageField.Id.ascending),
       Position.Keyset(List(KeysetValue.LongV(5), KeysetValue.LongV(6)))
     )
     expect.same(
-      Left("Keyset anchor arity mismatch: 1 cursor field(s) but 2 anchor value(s)"),
+      Left(FolioError.InvalidQuery("Keyset anchor arity mismatch: 1 cursor field(s) but 2 anchor value(s)")),
+      Pagination.buildSql(query, select, Some(messageKeyset)).map(_.fragment.sql)
+    )
+
+  // === Contract: duplicate / contradictory order fields are rejected before rendering ===
+
+  pureTest("duplicate order field (identical order) returns Left InvalidQuery"):
+    val query = resolved(
+      Vector(MessageField.Id.ascending, MessageField.Id.ascending),
+      Position.Keyset(List(KeysetValue.LongV(5)))
+    )
+    expect.same(
+      Left(FolioError.InvalidQuery("duplicate order field: id")),
+      Pagination.buildSql(query, select, Some(messageKeyset)).map(_.fragment.sql)
+    )
+
+  pureTest("contradictory order field (asc then desc) returns Left InvalidQuery"):
+    val query = resolved(
+      Vector(MessageField.Id.ascending, MessageField.Id.descending),
+      Position.Offset.First
+    )
+    expect.same(
+      Left(FolioError.InvalidQuery("duplicate order field: id")),
       Pagination.buildSql(query, select, Some(messageKeyset)).map(_.fragment.sql)
     )

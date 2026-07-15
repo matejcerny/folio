@@ -3,19 +3,18 @@ package example
 import folio.*
 
 import java.time.OffsetDateTime
-import scala.collection.immutable.ListSet
 
 case class Message(id: Long, enqueuedAt: OffsetDateTime, lastReadAt: Option[OffsetDateTime])
 
-// Step 1: Define the fields your entity can be sorted/filtered by +
+// Step 1: Define the fields your entity can be ordered/filtered by +
 // derive schema which maps enum cases to column name strings used in cursors.
 enum MessageField derives FieldSchema.SnakeCase:
   case Id, EnqueuedAt, LastReadAt
 
 // Step 2: Designate the unique field and how to extract it from a row — opts in to keyset pagination.
-// Register additional sort fields via `.withField(...)` so keyset works on those columns too;
+// Register additional order fields via `.withField(...)` so keyset works on those columns too;
 // `T => Option[V]` marks the field as absentable, so missing values encode as `KeysetValue.Absent`
-// and sort after present values regardless of direction.
+// and order after present values regardless of direction.
 given KeysetField[MessageField, Message] =
   KeysetField
     .uniqueBy(MessageField.Id, (message: Message) => message.id)
@@ -29,11 +28,7 @@ given KeysetField[MessageField, Message] =
     Message(3, OffsetDateTime.parse("2024-01-05T00:00:00Z"), Some(OffsetDateTime.parse("2024-01-06T00:00:00Z")))
   )
 
-  val query = Query(
-    filters = Set.empty,
-    sortBys = ListSet(MessageField.LastReadAt.descending),
-    limit = 2.items
-  )
+  val query = Query(limit = 2.items).orderBy(MessageField.LastReadAt.descending)
 
   // With KeysetField in scope and LastReadAt registered as absentable via `.withField` (Option overload),
   // this picks keyset; the cursor anchor is (lastReadAt, id) and a missing lastReadAt encodes as Absent.

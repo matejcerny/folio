@@ -1,6 +1,5 @@
 package folio
 
-import scala.collection.immutable.ListSet
 import scala.concurrent.{ ExecutionContext, Future }
 import scala.util.{ Failure, Success, Try }
 
@@ -15,12 +14,12 @@ object PagePaginationSuite extends SimpleIOSuite:
 
   private val limit = 2.items
 
-  private val keysetQuery: Query[TestField] = TestFixtures.queryWithIdSort.copy(limit = limit)
+  private val keysetQuery: Query[TestField] = TestFixtures.queryWithIdOrdering.copy(limit = limit)
   // Description is intentionally not registered as a keyset field, so this query falls back to offset.
   private val offsetQuery: Query[TestField] =
-    TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Description.descending), limit = limit)
+    TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.Description.descending), limit = limit)
   private val offsetOnlyQuery: Query[TestFieldNoId] =
-    TestFixtures.emptyQueryNoId.copy(sortBys = ListSet(TestFieldNoId.Timestamp.descending), limit = limit)
+    TestFixtures.emptyQueryNoId.copy(ordering = Vector(TestFieldNoId.Timestamp.descending), limit = limit)
 
   private val rowTable: InMemoryTable[TestField, Row] = InMemoryTable(TestFixtures.rows, TestFixtures.rowExtract)
   private val eventTable: InMemoryTable[TestFieldNoId, EventRow] =
@@ -60,11 +59,47 @@ object PagePaginationSuite extends SimpleIOSuite:
     val (captured, page) = Page.withPagination[Captured, T, FIELD](query, capturingFetch)
     (captured, page)
 
+  private def pageCapturingExplicit[FIELD: FieldSchema, T](
+      fetch: ResolvedQuery[FIELD] => Seq[T],
+      query: Query[FIELD],
+      keyset: Option[KeysetField[FIELD, T]]
+  ): (List[ResolvedQuery[FIELD]], Page[T]) =
+    type Captured[A] = (List[ResolvedQuery[FIELD]], A)
+    given FolioEffect[Captured] with
+      def map[A, B](effect: Captured[A])(transform: A => B): Captured[B] =
+        (effect._1, transform(effect._2))
+      def raiseError[A](error: FolioError): Captured[A] = throw error
+
+    val capturingFetch: ResolvedQuery[FIELD] => Captured[Seq[T]] = resolved => (List(resolved), fetch(resolved))
+    val (captured, page) = Page.withPagination[Captured, T, FIELD](query, capturingFetch, keyset)
+    (captured, page)
+
   private def raisedCursorError(result: => Any): CursorDecodingError =
     Try(result) match
       case Failure(error: CursorDecodingError) => error
       case Failure(error)                      => sys.error(s"expected CursorDecodingError, got $error")
       case Success(_)                          => sys.error("expected CursorDecodingError, but pagination succeeded")
+
+  // ---------- explicit keyset metadata ----------
+
+  pureTest("explicit Some enables keyset pagination without an in-scope KeysetField"):
+    val query = TestFixtures.emptyQueryNoId.copy(limit = limit)
+    val keyset = KeysetField.uniqueBy(TestFieldNoId.Timestamp, (event: EventRow) => event.timestamp)
+    val emptyFetch: ResolvedQuery[TestFieldNoId] => Seq[EventRow] = _ => Seq.empty
+    val (captured, _) = pageCapturingExplicit(emptyFetch, query, Some(keyset))
+    List(
+      expect.same(List(Vector(TestFieldNoId.Timestamp.ascending)), captured.map(_.ordering)),
+      expect.same(List(Position.Keyset.First), captured.map(_.position))
+    ).combineAll
+
+  pureTest("explicit None selects offset pagination despite an in-scope KeysetField"):
+    val query = TestFixtures.emptyQueryWithId.copy(limit = limit)
+    val emptyFetch: ResolvedQuery[TestField] => Seq[Row] = _ => Seq.empty
+    val (captured, _) = pageCapturingExplicit(emptyFetch, query, None)
+    List(
+      expect.same(List(Vector.empty[OrderBy[TestField]]), captured.map(_.ordering)),
+      expect.same(List(Position.Offset.First), captured.map(_.position))
+    ).combineAll
 
   // ---------- keyset ----------
 
@@ -299,10 +334,10 @@ object PagePaginationSuite extends SimpleIOSuite:
 
   // ---------- realistic fetcher ----------
 
-  // Sort by Description (unregistered) keeps offset semantics; description == createdAt for all rows
-  // so the realistic data assertions land in the same order as a CreatedAt asc sort.
+  // Order by Description (unregistered) keeps offset semantics; description == createdAt for all rows
+  // so the realistic data assertions land in the same order as a CreatedAt asc ordering.
   private val realisticOffsetQuery: Query[TestField] =
-    TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Description.ascending), limit = limit)
+    TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.Description.ascending), limit = limit)
 
   pureTest("realistic offset: forward through full dataset returns contiguous slices"):
     val page1 = pageWith(rowTable.fetch, realisticOffsetQuery)
@@ -325,14 +360,14 @@ object PagePaginationSuite extends SimpleIOSuite:
       expect.same(None, page5.nextCursor)
     ).combineAll
 
-  pureTest("realistic offset: backward returns previous slice in original sort order"):
+  pureTest("realistic offset: backward returns previous slice in original order"):
     val current = DecodedCursor(Direction.Backward, Position.Offset.unsafe(4L))
     val query = queryWithCurrent(realisticOffsetQuery, current)
     val (captured, page) = pageCapturing(rowTable.fetch, query)
     val next = page.nextCursor.map(decodedOf(_, query))
     val previous = page.previousCursor.map(decodedOf(_, query))
     List(
-      expect.same(List(ListSet(TestField.Description.ascending)), captured.map(_.sortBys)),
+      expect.same(List(Vector(TestField.Description.ascending)), captured.map(_.ordering)),
       expect.same(List(Position.Offset.unsafe(4L)), captured.map(_.position)),
       expect.same(Seq(0L, 5L), page.data.map(_.id)),
       expect.same(Some(DecodedCursor(Direction.Forward, Position.Offset.unsafe(6L))), next),
@@ -359,25 +394,25 @@ object PagePaginationSuite extends SimpleIOSuite:
     val next = page.nextCursor.map(decodedOf(_, query))
     val previous = page.previousCursor.map(decodedOf(_, query))
     List(
-      expect.same(List(ListSet(TestField.Id.ascending)), captured.map(_.sortBys)),
+      expect.same(List(Vector(TestField.Id.ascending)), captured.map(_.ordering)),
       expect.same(List(Direction.Backward), captured.map(_.direction)),
       expect.same(Seq(5L, 6L), page.data.map(_.id)),
       expect.same(Some(DecodedCursor(Direction.Forward, keysetOf(6L))), next),
       expect.same(Some(DecodedCursor(Direction.Backward, keysetOf(5L))), previous)
     ).combineAll
 
-  // ---------- realistic non-id sorts and filters ----------
+  // ---------- realistic non-id orders and filters ----------
 
-  pureTest("realistic offset: sort by Name asc with Id asc tiebreak paginates alphabetically"):
-    val nameSortQuery: Query[TestField] = TestFixtures.emptyQueryWithId.copy(
-      sortBys = ListSet(TestField.Name.ascending, TestField.Id.ascending),
+  pureTest("realistic offset: order by Name asc with Id asc tiebreak paginates alphabetically"):
+    val nameOrderQuery: Query[TestField] = TestFixtures.emptyQueryWithId.copy(
+      ordering = Vector(TestField.Name.ascending, TestField.Id.ascending),
       limit = limit
     )
-    val page1 = pageWith(rowTable.fetch, nameSortQuery)
+    val page1 = pageWith(rowTable.fetch, nameOrderQuery)
     val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page2 = pageWith(rowTable.fetch, nameSortQuery.copy(cursor = Some(cursor2)))
+    val page2 = pageWith(rowTable.fetch, nameOrderQuery.copy(cursor = Some(cursor2)))
     val cursor3 = page2.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page3 = pageWith(rowTable.fetch, nameSortQuery.copy(cursor = Some(cursor3)))
+    val page3 = pageWith(rowTable.fetch, nameOrderQuery.copy(cursor = Some(cursor3)))
     // alice ids 0,2,5,8 then bob ids 1,4,7 then charlie ids 3,6,9.
     List(
       expect.same(Seq(("alice", 0L), ("alice", 2L)), page1.data.map(row => (row.name, row.id))),
@@ -385,9 +420,9 @@ object PagePaginationSuite extends SimpleIOSuite:
       expect.same(Seq(("bob", 1L), ("bob", 4L)), page3.data.map(row => (row.name, row.id)))
     ).combineAll
 
-  pureTest("realistic offset: sort by CreatedAt desc returns rows newest to oldest"):
+  pureTest("realistic offset: order by CreatedAt desc returns rows newest to oldest"):
     val createdDescQuery: Query[TestField] = TestFixtures.emptyQueryWithId.copy(
-      sortBys = ListSet(TestField.CreatedAt.descending),
+      ordering = Vector(TestField.CreatedAt.descending),
       limit = limit
     )
     val page1 = pageWith(rowTable.fetch, createdDescQuery)
@@ -402,10 +437,10 @@ object PagePaginationSuite extends SimpleIOSuite:
       expect.same(Seq(5L, 0L), page3.data.map(_.id))
     ).combineAll
 
-  pureTest("realistic offset: filter Name=alice with sort CreatedAt asc round-trips through alice rows"):
+  pureTest("realistic offset: filter Name=alice with CreatedAt asc ordering round-trips through alice rows"):
     val aliceQuery: Query[TestField] = Query(
       filters = Set(FilterBy.ExactMatch(TestField.Name, "alice")),
-      sortBys = ListSet(TestField.CreatedAt.ascending),
+      ordering = Vector(TestField.CreatedAt.ascending),
       limit = limit,
       cursor = None
     )
@@ -425,9 +460,9 @@ object PagePaginationSuite extends SimpleIOSuite:
       expect.same(page2, page2Again)
     ).combineAll
 
-  pureTest("realistic offset: multi-key sort (Name asc, CreatedAt desc) backward cursor returns prior slice"):
+  pureTest("realistic offset: multi-key ordering (Name asc, CreatedAt desc) backward cursor returns prior slice"):
     val multiKeyQuery: Query[TestField] = TestFixtures.emptyQueryWithId.copy(
-      sortBys = ListSet(TestField.Name.ascending, TestField.CreatedAt.descending),
+      ordering = Vector(TestField.Name.ascending, TestField.CreatedAt.descending),
       limit = limit
     )
     val page1 = pageWith(rowTable.fetch, multiKeyQuery)
@@ -445,10 +480,10 @@ object PagePaginationSuite extends SimpleIOSuite:
       expect.same(page2, page2Again)
     ).combineAll
 
-  pureTest("realistic offset-only: filter Source=api with sort Timestamp desc paginates without KeysetField"):
+  pureTest("realistic offset-only: filter Source=api with Timestamp desc ordering paginates without KeysetField"):
     val eventQuery: Query[TestFieldNoId] = Query(
       filters = Set(FilterBy.ExactMatch(TestFieldNoId.Source, "api")),
-      sortBys = ListSet(TestFieldNoId.Timestamp.descending),
+      ordering = Vector(TestFieldNoId.Timestamp.descending),
       limit = limit,
       cursor = None
     )
@@ -466,7 +501,7 @@ object PagePaginationSuite extends SimpleIOSuite:
   pureTest("realistic keyset: filter Name=alice with default Id asc anchors cursor within filtered set"):
     val keysetFilteredQuery: Query[TestField] = Query(
       filters = Set(FilterBy.ExactMatch(TestField.Name, "alice")),
-      sortBys = ListSet.empty,
+      ordering = Vector.empty,
       limit = limit,
       cursor = None
     )
@@ -476,7 +511,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     val (captured2, page2) = pageCapturing(rowTable.fetch, followUpQuery)
     // alice rows by id asc: 0, 2, 5, 8. Cursor anchors at id=2 within filtered candidates.
     List(
-      expect.same(List(ListSet(TestField.Id.ascending)), captured1.map(_.sortBys)),
+      expect.same(List(Vector(TestField.Id.ascending)), captured1.map(_.ordering)),
       expect.same(List(Position.Keyset(Nil)), captured1.map(_.position)),
       expect.same(Seq(0L, 2L), page1.data.map(_.id)),
       expect.same(List(keysetOf(2L)), captured2.map(_.position)),
@@ -484,38 +519,40 @@ object PagePaginationSuite extends SimpleIOSuite:
       expect.same(None, page2.nextCursor)
     ).combineAll
 
-  // ---------- no-sort keyset default sort ----------
+  // ---------- no-ordering keyset default ordering ----------
 
-  pureTest("no-sort keyset: forward initial fetch resolves to default ascending id sort"):
+  pureTest("no-ordering keyset: forward initial fetch resolves to default ascending id ordering"):
     val query = TestFixtures.emptyQueryWithId.copy(limit = limit)
     val (captured, _) = pageCapturing(rowTable.fetch, query)
     List(
-      expect.same(List(ListSet(TestField.Id.ascending)), captured.map(_.sortBys)),
+      expect.same(List(Vector(TestField.Id.ascending)), captured.map(_.ordering)),
       expect.same(List(Position.Keyset(Nil)), captured.map(_.position))
     ).combineAll
 
-  pureTest("no-sort keyset: backward fetch keeps the canonical ascending id sort and signals Backward direction"):
+  pureTest(
+    "no-ordering keyset: backward fetch keeps the canonical ascending id ordering and signals Backward direction"
+  ):
     val current = DecodedCursor(Direction.Backward, keysetOf(7L))
     val query = queryWithCurrent(TestFixtures.emptyQueryWithId.copy(limit = limit), current)
     val (captured, _) = pageCapturing(rowTable.fetch, query)
     List(
-      expect.same(List(ListSet(TestField.Id.ascending)), captured.map(_.sortBys)),
+      expect.same(List(Vector(TestField.Id.ascending)), captured.map(_.ordering)),
       expect.same(List(Direction.Backward), captured.map(_.direction))
     ).combineAll
 
-  pureTest("no-sort offset-only: empty sortBys still passed through (no IdField in scope)"):
+  pureTest("no-ordering offset-only: empty ordering still passed through (no IdField in scope)"):
     val query = TestFixtures.emptyQueryNoId.copy(limit = limit)
     val emptyFetch: ResolvedQuery[TestFieldNoId] => Seq[EventRow] = _ => Seq.empty
     val (captured, _) = pageCapturing(emptyFetch, query)
     List(
-      expect.same(List(ListSet.empty[SortBy[TestFieldNoId]]), captured.map(_.sortBys)),
+      expect.same(List(Vector.empty[OrderBy[TestFieldNoId]]), captured.map(_.ordering)),
       expect.same(List(Position.Offset.unsafe(0L)), captured.map(_.position))
     ).combineAll
 
   // ---------- strategy mismatch ----------
 
-  pureTest("mismatch: keyset cursor against offset query (KeysetField in scope, non-id sort) is rejected"):
-    // offsetQuery has sortBys = [Description.descending]; KeysetField has Id registered.
+  pureTest("mismatch: keyset cursor against offset query (KeysetField in scope, non-id order) is rejected"):
+    // offsetQuery has ordering = [Description.descending]; KeysetField has Id registered.
     // The encoded keyset must therefore carry two values (description + id) to satisfy arity validation
     // before reaching the strategy-mismatch check.
     val keysetPosition =
@@ -533,13 +570,13 @@ object PagePaginationSuite extends SimpleIOSuite:
     )
     expect.same(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"), error)
 
-  pureTest("mismatch: offset cursor against keyset query (id sort) is rejected"):
+  pureTest("mismatch: offset cursor against keyset query (id ordering) is rejected"):
     val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(10L))
     val query = queryWithCurrent(keysetQuery, current)
     val error = raisedCursorError(Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected")))
     expect.same(CursorDecodingError.IncompatibleCursor("cursor strategy does not match query"), error)
 
-  pureTest("mismatch: offset cursor against no-sort keyset default is rejected"):
+  pureTest("mismatch: offset cursor against no-ordering keyset default is rejected"):
     val current = DecodedCursor(Direction.Forward, Position.Offset.unsafe(10L))
     val query = queryWithCurrent(TestFixtures.emptyQueryWithId.copy(limit = limit), current)
     val error = raisedCursorError(Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected")))
@@ -557,7 +594,7 @@ object PagePaginationSuite extends SimpleIOSuite:
   // ---------- non-id keyset (multi-field cursor) ----------
 
   private val createdAtKeysetQuery: Query[TestField] =
-    TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.CreatedAt.ascending), limit = limit)
+    TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.CreatedAt.ascending), limit = limit)
 
   pureTest("non-id keyset: CreatedAt asc round-trips forward through dataset with id tiebreaker"):
     val page1 = pageWith(rowTable.fetch, createdAtKeysetQuery)
@@ -608,37 +645,37 @@ object PagePaginationSuite extends SimpleIOSuite:
       captured.map(_.position)
     )
 
-  pureTest("non-id keyset fallback: sort by unregistered field falls back to offset"):
+  pureTest("non-id keyset fallback: order by unregistered field falls back to offset"):
     // Description is unregistered, so Position.fromQuery resolves to Offset.First.
-    val unregisteredSortQuery: Query[TestField] =
-      TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Description.descending), limit = limit)
-    val (captured, _) = pageCapturing(rowTable.fetch, unregisteredSortQuery)
+    val unregisteredOrderQuery: Query[TestField] =
+      TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.Description.descending), limit = limit)
+    val (captured, _) = pageCapturing(rowTable.fetch, unregisteredOrderQuery)
     List(
       expect.same(List(Position.Offset.First), captured.map(_.position)),
-      expect.same(List(ListSet(TestField.Description.descending)), captured.map(_.sortBys))
+      expect.same(List(Vector(TestField.Description.descending)), captured.map(_.ordering))
     ).combineAll
 
   // ---------- absentable-field keyset ----------
   // LastSeen is registered as absentable; rows 0..4 have Some lastSeen, rows 5..9 have None.
-  // Forward order with sort [LastSeen.asc, Id.asc] (Absent-last per ADR 0001):
+  // Forward order with ordering [LastSeen.asc, Id.asc] (Absent-last per ADR 0001):
   //   ids 0, 1, 2, 3, 4 (Some asc), then ids 5, 6, 7, 8, 9 (None tiebroken by Id.asc).
 
-  private val absentSortQuery: Query[TestField] =
+  private val absentOrderQuery: Query[TestField] =
     TestFixtures.emptyQueryWithId.copy(
-      sortBys = ListSet(TestField.LastSeen.ascending, TestField.Id.ascending),
+      ordering = Vector(TestField.LastSeen.ascending, TestField.Id.ascending),
       limit = limit
     )
 
   pureTest("absent keyset: forward walk crosses Some/Absent boundary in canonical order"):
-    val page1 = pageWith(rowTable.fetch, absentSortQuery)
+    val page1 = pageWith(rowTable.fetch, absentOrderQuery)
     val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page2 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor2)))
+    val page2 = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(cursor2)))
     val cursor3 = page2.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page3 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor3)))
+    val page3 = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(cursor3)))
     val cursor4 = page3.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page4 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor4)))
+    val page4 = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(cursor4)))
     val cursor5 = page4.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page5 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor5)))
+    val page5 = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(cursor5)))
     List(
       expect.same(Seq(0L, 1L), page1.data.map(_.id)),
       expect.same(Seq(2L, 3L), page2.data.map(_.id)),
@@ -650,13 +687,13 @@ object PagePaginationSuite extends SimpleIOSuite:
     ).combineAll
 
   pureTest("absent keyset: page3's nextCursor anchors Absent in the LastSeen slot"):
-    val page1 = pageWith(rowTable.fetch, absentSortQuery)
+    val page1 = pageWith(rowTable.fetch, absentOrderQuery)
     val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page2 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor2)))
+    val page2 = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(cursor2)))
     val cursor3 = page2.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page3 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor3)))
+    val page3 = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(cursor3)))
     val cursor4 = page3.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val decoded = decodedOf(cursor4, absentSortQuery)
+    val decoded = decodedOf(cursor4, absentOrderQuery)
     // page3 ends with id=5 (None lastSeen); cursor encodes (Absent, id=5).
     expect.same(
       DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5L)))),
@@ -665,15 +702,15 @@ object PagePaginationSuite extends SimpleIOSuite:
 
   pureTest("absent keyset: backward inside the Absent block round-trips to the prior page"):
     // page4 = [(None,6), (None,7)] and page5 = [(None,8), (None,9)] both lie inside the Absent block.
-    val page4Cursor = pageWith(rowTable.fetch, absentSortQuery).nextCursor
-      .flatMap(c => pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(c))).nextCursor)
-      .flatMap(c => pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(c))).nextCursor)
+    val page4Cursor = pageWith(rowTable.fetch, absentOrderQuery).nextCursor
+      .flatMap(c => pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(c))).nextCursor)
+      .flatMap(c => pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(c))).nextCursor)
       .getOrElse(sys.error("expected next cursor"))
-    val page4 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(page4Cursor)))
+    val page4 = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(page4Cursor)))
     val cursor5 = page4.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page5 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor5)))
+    val page5 = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(cursor5)))
     val backCursor = page5.previousCursor.getOrElse(sys.error("expected previous cursor"))
-    val page4Again = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(backCursor)))
+    val page4Again = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(backCursor)))
     List(
       expect.same(Seq(6L, 7L), page4.data.map(_.id)),
       expect.same(Seq(8L, 9L), page5.data.map(_.id)),
@@ -681,13 +718,13 @@ object PagePaginationSuite extends SimpleIOSuite:
     ).combineAll
 
   pureTest("absent keyset: forward then backward round-trips inside the Some block"):
-    val page1 = pageWith(rowTable.fetch, absentSortQuery)
+    val page1 = pageWith(rowTable.fetch, absentOrderQuery)
     val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page2 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor2)))
+    val page2 = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(cursor2)))
     val backCursor = page2.previousCursor.getOrElse(sys.error("expected previous cursor"))
-    val pageBack = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(backCursor)))
+    val pageBack = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(backCursor)))
     val forwardCursor = pageBack.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page2Again = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(forwardCursor)))
+    val page2Again = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(forwardCursor)))
     List(
       expect.same(Seq(0L, 1L), pageBack.data.map(_.id)),
       expect.same(page2, page2Again)
@@ -697,19 +734,51 @@ object PagePaginationSuite extends SimpleIOSuite:
     // Forward sequence: [0,1] [2,3] [4,5] [6,7] [8,9]. page4=[6,7] sits entirely in the Absent block;
     // its previousCursor anchors at (Absent, 6), so the backward seek must cross into the Some block
     // and return [4, 5] — the canonical slice immediately preceding page4.
-    val page1 = pageWith(rowTable.fetch, absentSortQuery)
+    val page1 = pageWith(rowTable.fetch, absentOrderQuery)
     val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page2 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor2)))
+    val page2 = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(cursor2)))
     val cursor3 = page2.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page3 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor3)))
+    val page3 = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(cursor3)))
     val cursor4 = page3.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page4 = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(cursor4)))
+    val page4 = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(cursor4)))
     val backCursor = page4.previousCursor.getOrElse(sys.error("expected previous cursor"))
-    val pageBack = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(backCursor)))
+    val pageBack = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(backCursor)))
     val forwardCursor = pageBack.nextCursor.getOrElse(sys.error("expected next cursor"))
-    val page4Again = pageWith(rowTable.fetch, absentSortQuery.copy(cursor = Some(forwardCursor)))
+    val page4Again = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(forwardCursor)))
     List(
       expect.same(Seq(6L, 7L), page4.data.map(_.id)),
       expect.same(Seq(4L, 5L), pageBack.data.map(_.id)),
       expect.same(page4, page4Again)
+    ).combineAll
+
+  // ---------- duplicate order-field validation ----------
+
+  /** Writer-style effect: accumulates fetch call sites, then either a page or a raised [[FolioError]]. */
+  private type ValidatedFetch[A] = (List[ResolvedQuery[TestField]], Either[FolioError, A])
+
+  private given FolioEffect[ValidatedFetch] with
+    def map[A, B](effect: ValidatedFetch[A])(transform: A => B): ValidatedFetch[B] =
+      (effect._1, effect._2.map(transform))
+    def raiseError[A](error: FolioError): ValidatedFetch[A] = (Nil, Left(error))
+
+  private def rejectDuplicateOrdering(
+      query: Query[TestField]
+  ): (List[ResolvedQuery[TestField]], Either[FolioError, Page[Row]]) =
+    val fetch: ResolvedQuery[TestField] => ValidatedFetch[Seq[Row]] = resolved => (List(resolved), Right(Seq.empty))
+    Page.withPagination[ValidatedFetch, Row, TestField](query, fetch)
+
+  pureTest("duplicate order field (identical order) raises InvalidQuery and does not fetch"):
+    val query = Query(limit = limit).orderBy(TestField.Id.ascending, TestField.Id.ascending)
+    val (calls, result) = rejectDuplicateOrdering(query)
+    List(
+      expect.same(Nil, calls),
+      expect.same(Left(FolioError.InvalidQuery("duplicate order field: id")), result)
+    ).combineAll
+
+  pureTest("contradictory order field (asc then desc) raises InvalidQuery and does not fetch"):
+    val query = Query(limit = limit).orderBy(TestField.Id.ascending, TestField.Id.descending)
+    val (calls, result) = rejectDuplicateOrdering(query)
+    List(
+      expect.same(Nil, calls),
+      expect.same(Left(FolioError.InvalidQuery("duplicate order field: id")), result)
     ).combineAll

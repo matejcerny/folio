@@ -51,3 +51,6 @@ object LimitSuite extends SimpleIOSuite with Checkers:
 
   pureTest("Int.items literal yields a Limit"):
     expect.same(Limit.unsafe(25), 25.items)
+
+  pureTest("Limit.fetchLimit is one more than the page size"):
+    expect.same(26, Limit.unsafe(25).fetchLimit.value)

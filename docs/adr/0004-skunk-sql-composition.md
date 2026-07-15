@@ -19,7 +19,7 @@ its own. folio cannot assume any particular shape, and must not reorder or
 reinterpret the user's filtering.
 
 Identifier handling is a related concern: the keyset predicate and `ORDER BY`
-reference sort/keyset columns by name, and those names come from
+reference order/keyset columns by name, and those names come from
 `FieldSchema`. A column name could be a reserved word, mixed case, or contain a
 double quote.
 
@@ -31,7 +31,7 @@ black box and wrapped:
 ```
 SELECT * FROM ( <select> ) AS usersql
  WHERE <keyset predicate>
- ORDER BY <sortBys, direction-aware>
+ ORDER BY <ordering, direction-aware>
  LIMIT <limit>
 ```
 
@@ -59,9 +59,9 @@ a SQL-identifier quoting rule must not leak into core.
 
 - The user keeps full control of their `SELECT`; folio never parses or rewrites
   it. Any valid query the caller can write, folio can paginate, as long as the
-  sort/keyset columns are projected by the inner `SELECT` (see ADR 0006).
+  order/keyset columns are projected by the inner `SELECT` (see ADR 0006).
 - The prepared-statement template is stable across advances of the same query
-  shape (page position, present-vs-`Absent` anchor pattern, sort, direction),
+  shape (page position, present-vs-`Absent` anchor pattern, ordering, direction),
   so the statement cache is reused within a shape rather than thrashed on every
   distinct anchor value the way literal-baking would.
 - Parameters from a parameterized user `SELECT` precede folio's, and Skunk

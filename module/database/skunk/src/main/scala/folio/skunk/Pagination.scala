@@ -1,9 +1,8 @@
 package folio.skunk
 
-import scala.collection.immutable.ListSet
 import scala.compiletime.summonFrom
 
-import cats.effect.Concurrent
+import cats.effect.{ Concurrent, Resource }
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import skunk.{ AppliedFragment, Decoder, Session, Void }
@@ -21,8 +20,8 @@ object Pagination:
 
   /** Paginate an opaque `select` using the supplied Skunk session and decoder.
     *
-    * An in-scope `KeysetField[FIELD, T]` makes keyset pagination available; unsupported sorts fall back to offset. The
-    * caller owns the `Session` lifecycle. Cursor, SQL, and session failures are raised in `F`.
+    * An in-scope `KeysetField[FIELD, T]` makes keyset pagination available; unsupported orderings fall back to offset.
+    * The caller owns the `Session` lifecycle. Cursor, SQL, and session failures are raised in `F`.
     */
   inline def withPagination[F[_]: Concurrent, T, FIELD: FieldSchema](
       query: Query[FIELD],
@@ -33,9 +32,31 @@ object Pagination:
   )(using CursorCodec): F[Page[T]] =
     summonFrom:
       case keysetField: KeysetField[FIELD, T] =>
-        Page.withPagination[F, T, FIELD](query, fetchFromSession(_, session, decoder, select, Some(keysetField)))
+        val keyset = Some(keysetField)
+        Page.withPagination[F, T, FIELD](
+          query,
+          fetchFromSession(_, session, decoder, select, keyset),
+          keyset
+        )
       case _ =>
-        Page.withPagination[F, T, FIELD](query, fetchFromSession(_, session, decoder, select, None))
+        val keyset = None
+        Page.withPagination[F, T, FIELD](query, fetchFromSession(_, session, decoder, select, keyset), keyset)
+
+  /** Paginate an opaque `select` using a session drawn from the supplied resource and decoder.
+    *
+    * Behaves like the `Session[F]` overload, but acquires a session for the duration of this call and releases it
+    * afterwards. This fits a pooled `Resource[F, Session[F]]` checkout; the `Session[F]` overload remains the primitive
+    * when the caller already holds a session and owns its lifecycle. Cursor, SQL, and session failures are raised in
+    * `F`.
+    */
+  inline def withPagination[F[_]: Concurrent, T, FIELD: FieldSchema](
+      query: Query[FIELD],
+      session: Resource[F, Session[F]],
+      decoder: Decoder[T]
+  )(
+      select: AppliedFragment
+  )(using CursorCodec): F[Page[T]] =
+    session.use(withPagination[F, T, FIELD](query, _, decoder)(select))
 
   private[folio] def fetchFromSession[F[_]: Concurrent, T, FIELD: FieldSchema](
       resolved: ResolvedQuery[FIELD],
@@ -48,9 +69,9 @@ object Pagination:
       case Right(applied) =>
         session
           .prepare(applied.fragment.query(decoder))
-          .flatMap(_.stream(applied.argument, chunkSize = resolved.limit.value).compile.toList.widen[Seq[T]])
+          .flatMap(_.stream(applied.argument, chunkSize = resolved.fetchLimit.value).compile.toList.widen[Seq[T]])
       case Left(error) =>
-        Concurrent[F].raiseError(new RuntimeException(s"folio-skunk buildSql: $error"))
+        Concurrent[F].raiseError(error)
 
   /** Compose parameterized keyset or offset SQL for a resolved query.
     *
@@ -58,11 +79,11 @@ object Pagination:
     * {{{
     *   SELECT * FROM ( <select> ) AS usersql
     *   WHERE <keyset predicate>
-    *   ORDER BY <sort fields>
+    *   ORDER BY <order fields>
     *   LIMIT <resolved limit>
     * }}}
     *
-    * The subquery must project every sort and keyset column under its `FieldSchema` name.
+    * The subquery must project every order and keyset column under its `FieldSchema` name.
     *
     * Values are bound through `AppliedFragment`; the SQL shape can still differ for the first page and `Absent`
     * anchors. Pass the same `KeysetField` used to resolve the query, or `None` for offset-only pagination. A missing
@@ -79,15 +100,21 @@ object Pagination:
       resolved: ResolvedQuery[FIELD],
       select: AppliedFragment,
       keyset: Option[KeysetField[FIELD, ?]]
-  ): Either[String, AppliedFragment] =
-    resolved.position match
-      case offset: Position.Offset         => Right(renderOffset(resolved, select, offset, keyset))
-      case keysetPosition: Position.Keyset =>
-        keyset match
-          case Some(keysetField) =>
-            renderKeyset(resolved, select, keysetPosition, keysetField.field, keysetField.absentableFields)
-          case None =>
-            Left("Position.Keyset requires Some(keysetField); pass the KeysetField used to resolve the query")
+  ): Either[FolioError, AppliedFragment] =
+    OrderBy.validateFields(resolved.ordering).flatMap { _ =>
+      resolved.position match
+        case offset: Position.Offset         => Right(renderOffset(resolved, select, offset, keyset))
+        case keysetPosition: Position.Keyset =>
+          keyset match
+            case Some(keysetField) =>
+              renderKeyset(resolved, select, keysetPosition, keysetField.field, keysetField.absentableFields)
+            case None =>
+              Left(
+                FolioError.InvalidQuery(
+                  "Position.Keyset requires Some(keysetField); pass the KeysetField used to resolve the query"
+                )
+              )
+    }
 
   private def renderKeyset[FIELD: FieldSchema](
       resolved: ResolvedQuery[FIELD],
@@ -95,8 +122,8 @@ object Pagination:
       keyset: Position.Keyset,
       idField: FIELD,
       absentableFields: Set[FIELD]
-  ): Either[String, AppliedFragment] =
-    val cursorFields = CursorAdvance.cursorFieldsFor(resolved.sortBys, idField)
+  ): Either[FolioError, AppliedFragment] =
+    val cursorFields = CursorAdvance.cursorFieldsFor(resolved.ordering, idField)
 
     // Empty is the first-page anchor; otherwise exact arity prevents zip from truncating the predicate.
     Either.cond(
@@ -105,18 +132,20 @@ object Pagination:
           if keyset.values.isEmpty then AppliedFragment.empty
           else
             raw(" WHERE ") |+| keysetPredicate(
-              resolved.sortBys,
+              resolved.ordering,
               resolved.direction,
               cursorFields,
               keyset.values,
               absentableFields
             )
 
-        val orderByClause = raw(" ORDER BY ") |+| orderBy(resolved.sortBys, cursorFields, resolved.direction)
+        val orderByClause = raw(" ORDER BY ") |+| orderBy(resolved.ordering, cursorFields, resolved.direction)
 
         wrap(select) |+| whereClause |+| orderByClause |+| limitClause(resolved)
       },
-      s"Keyset anchor arity mismatch: ${cursorFields.size} cursor field(s) but ${keyset.values.size} anchor value(s)"
+      FolioError.InvalidQuery(
+        s"Keyset anchor arity mismatch: ${cursorFields.size} cursor field(s) but ${keyset.values.size} anchor value(s)"
+      )
     )
 
   private def renderOffset[FIELD: FieldSchema](
@@ -127,12 +156,12 @@ object Pagination:
   ): AppliedFragment =
     // Offset is absolute, so use forward ordering and append the unique field when available.
     val orderFields = keyset match
-      case Some(keysetField) => CursorAdvance.cursorFieldsFor(resolved.sortBys, keysetField.field)
-      case None              => resolved.sortBys.toList.map(_.field)
-    val sorted = orderBy(resolved.sortBys, orderFields, Direction.Forward)
+      case Some(keysetField) => CursorAdvance.cursorFieldsFor(resolved.ordering, keysetField.field)
+      case None              => resolved.ordering.toList.map(_.field)
+    val orderingClause = orderBy(resolved.ordering, orderFields, Direction.Forward)
     val orderByClause =
       if orderFields.isEmpty then AppliedFragment.empty
-      else raw(" ORDER BY ") |+| sorted
+      else raw(" ORDER BY ") |+| orderingClause
 
     wrap(select) |+| orderByClause |+| raw(" OFFSET ") |+| sql"$int8".apply(offset.offset) |+| limitClause(resolved)
 
@@ -140,8 +169,8 @@ object Pagination:
     raw("SELECT * FROM (") |+| select |+| raw(") AS usersql")
 
   private def limitClause[FIELD](resolved: ResolvedQuery[FIELD]): AppliedFragment =
-    // resolved.limit is already the bounded fetch size (limit + 1); do not add 1 again.
-    raw(" LIMIT ") |+| sql"$int4".apply(resolved.limit.value)
+    // fetchLimit is the page size plus one, so withPagination can detect a further page.
+    raw(" LIMIT ") |+| sql"$int4".apply(resolved.fetchLimit.value)
 
   // === Keyset predicate ===
 
@@ -149,7 +178,7 @@ object Pagination:
     * Equality uses `IS NOT DISTINCT FROM` so NULL equals NULL.
     */
   private def keysetPredicate[FIELD: FieldSchema](
-      sortBys: ListSet[SortBy[FIELD]],
+      ordering: Vector[OrderBy[FIELD]],
       direction: Direction,
       cursorFields: List[FIELD],
       values: List[KeysetValue],
@@ -162,7 +191,7 @@ object Pagination:
         equalityRung(columnReference(field), value)
 
       val (field, value) = fieldsWithValues(rung)
-      val order = orderFor(sortBys, field)
+      val order = orderFor(ordering, field)
       val strict = strictStep(columnReference(field), value, order, direction, absentableFields.contains(field))
 
       if equalityRungs.isEmpty then strict
@@ -211,16 +240,16 @@ object Pagination:
 
   // === Ordering ===
   private def orderBy[FIELD: FieldSchema](
-      sortBys: ListSet[SortBy[FIELD]],
+      ordering: Vector[OrderBy[FIELD]],
       cursorFields: List[FIELD],
       direction: Direction
   ): AppliedFragment =
     val clauses = cursorFields.map: field =>
-      val appended = !sortBys.exists(_.field == field)
-      orderByClause(columnReference(field), orderFor(sortBys, field), direction, appended)
+      val appended = !ordering.exists(_.field == field)
+      orderByClause(columnReference(field), orderFor(ordering, field), direction, appended)
     joinFragments(clauses, raw(", "))
 
-  /** Appended unique fields use their default ascending order without a NULLS clause. Sort fields reverse both order
+  /** Appended unique fields use their default ascending order without a NULLS clause. Order fields reverse both order
     * and NULL placement for backward traversal (ADRs 0001 and 0003).
     */
   private def orderByClause(
@@ -242,8 +271,8 @@ object Pagination:
           case (Order.Descending, Direction.Backward) => "ASC NULLS FIRST"
     column |+| raw(" " + keyword)
 
-  private def orderFor[FIELD](sortBys: ListSet[SortBy[FIELD]], field: FIELD): Order =
-    sortBys.find(_.field == field).map(_.order).getOrElse(Order.Default)
+  private def orderFor[FIELD](ordering: Vector[OrderBy[FIELD]], field: FIELD): Order =
+    ordering.find(_.field == field).map(_.order).getOrElse(Order.Default)
 
   // === Rendering ===
 

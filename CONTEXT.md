@@ -6,8 +6,8 @@ that). It records the *words* folio uses and what they mean.
 
 folio's intended scope spans three layers:
 
-- **HTTP modules** (e.g. tapir): parse sort/filter from query params.
-- **Core**: cursor encoding, position resolution, sort/filter modeling —
+- **HTTP modules** (e.g. tapir): parse order/filter from query params.
+- **Core**: cursor encoding, position resolution, order/filter modeling —
   driver-agnostic.
 - **Driver modules** (Skunk, Doobie, future Mongo, …): translate a
   `ResolvedQuery` into a backend-native query.
@@ -25,7 +25,7 @@ Terms below live in the **core** unless otherwise noted.
 
 ### Absent
 
-The cursor-anchor slot for a row whose sort-column value was missing.
+The cursor-anchor slot for a row whose order-column value was missing.
 
 Driver modules translate `Absent` into their backend's idiom:
 
@@ -35,7 +35,7 @@ Driver modules translate `Absent` into their backend's idiom:
 `Absent` is folio's neutral name for the concept. It is deliberately *not*
 called "Null" — that word belongs only to the SQL driver layer.
 
-A sort field is **absentable** when its row values may be missing. The
+An order field is **absentable** when its row values may be missing. The
 source of truth is the row class itself: if `T.field` is typed as
 `Option[V]`, the field is absentable; otherwise it is not. `KeysetField`
 mirrors that type — there is no separate `withAbsentableField` method —
@@ -47,7 +47,7 @@ The unique field (see [[Unique field]]) is never absentable.
 ### Unique field
 
 The first field passed to `KeysetField.uniqueBy(...)`. It plays the role of
-*tiebreaker* in the keyset algorithm: when all other sort fields produce
+*tiebreaker* in the keyset algorithm: when all other order fields produce
 equal values, the unique field decides order. Its values must therefore be
 distinct across the entire result set — that is the contract the
 `uniqueBy` name advertises.

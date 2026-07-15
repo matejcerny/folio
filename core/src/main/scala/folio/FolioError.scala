@@ -13,3 +13,5 @@ object FolioError:
     case object StaleCursor extends CursorDecodingError("Cursor is stale: query parameters changed")
 
     case class IncompatibleCursor(reason: String) extends CursorDecodingError(s"Cursor does not match query: $reason")
+
+  case class InvalidQuery(reason: String) extends FolioError(s"Invalid query: $reason")

@@ -3,7 +3,6 @@ package folio
 import folio.CursorBytes.*
 import folio.FolioError.*
 
-import scala.collection.immutable.ListSet
 import scala.compiletime.summonFrom
 import scala.util.hashing.MurmurHash3
 
@@ -110,10 +109,10 @@ object Cursor:
       query: Query[FIELD],
       metadata: KeysetMetadata[FIELD]
   ): List[FIELD] =
-    val sortFields = query.sortBys.toList.map(_.field)
+    val orderingFields = query.ordering.map(_.field).toList
     metadata.uniqueField match
-      case Some(uniqueField) if !sortFields.contains(uniqueField) => sortFields :+ uniqueField
-      case _                                                      => sortFields
+      case Some(uniqueField) if !orderingFields.contains(uniqueField) => orderingFields :+ uniqueField
+      case _                                                          => orderingFields
 
   private def validateKeysetArity[FIELD: FieldSchema](
       decoded: DecodedCursor,
@@ -227,8 +226,8 @@ object Cursor:
         .liftRead
         .flatMap(readKeysetValues(_).map(Position.Keyset.apply))
 
-  private def sortPart[FIELD: FieldSchema](sortBys: ListSet[SortBy[FIELD]]): String =
-    sortBys.map(sortBy => s"${sortBy.field.name}:${orderPart(sortBy.order)}").mkString(",")
+  private def orderingPart[FIELD: FieldSchema](ordering: Vector[OrderBy[FIELD]]): String =
+    ordering.map(orderBy => s"${orderBy.field.name}:${orderPart(orderBy.order)}").mkString(",")
 
   private def orderPart(order: Order): String =
     order match
@@ -242,9 +241,9 @@ object Cursor:
 
   private def hash[FIELD: FieldSchema](query: Query[FIELD], absentPart: String): Int =
     val limit = query.limit.value.toString
-    val sort = sortPart(query.sortBys)
+    val orderingFingerprint = orderingPart(query.ordering)
     val filter = query.filters.toSeq.map(singleFilterPart).sorted.mkString(",")
-    MurmurHash3.stringHash(s"$limit;$sort;$filter;$absentPart")
+    MurmurHash3.stringHash(s"$limit;$orderingFingerprint;$filter;$absentPart")
 
   private inline def computeFingerprint[FIELD: FieldSchema](query: Query[FIELD]): Int =
     summonFrom:

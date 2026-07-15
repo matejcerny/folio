@@ -1,6 +1,5 @@
 package folio
 
-import scala.collection.immutable.ListSet
 import scala.util.Try
 
 import weaver.SimpleIOSuite
@@ -16,19 +15,19 @@ object PositionSuite extends SimpleIOSuite:
     given KeysetField[TestField, Any] =
       KeysetField.uniqueBy(TestField.Id, (_: Any) => 0L).withField(TestField.CreatedAt, _ => "")
 
-  pureTest("IdField present + primary sort is id field returns Keyset(Nil)"):
-    val query = Query.empty[TestField].copy(sortBys = ListSet(TestField.Id.ascending))
+  pureTest("IdField present + primary order is id field returns Keyset(Nil)"):
+    val query = Query.empty[TestField].copy(ordering = Vector(TestField.Id.ascending))
     val position = Position.fromQuery(query)
 
     expect.same(Position.Keyset(Nil), position)
 
-  pureTest("IdField present + primary sort has no extractor returns Offset.First"):
-    val query = Query.empty[TestField].copy(sortBys = ListSet(TestField.CreatedAt.descending))
+  pureTest("IdField present + primary order has no extractor returns Offset.First"):
+    val query = Query.empty[TestField].copy(ordering = Vector(TestField.CreatedAt.descending))
     val position = Position.fromQuery(query)
 
     expect.same(Position.Offset.First, position)
 
-  pureTest("IdField present + no sort returns Keyset(Nil)"):
+  pureTest("IdField present + no ordering returns Keyset(Nil)"):
     val position = Position.fromQuery(Query.empty[TestField])
 
     expect.same(Position.Keyset(Nil), position)
@@ -38,36 +37,36 @@ object PositionSuite extends SimpleIOSuite:
 
     expect.same(Position.Offset.First, position)
 
-  pureTest("no IdField with sort still returns Offset.First"):
-    val query = Query.empty[TestFieldNoId].copy(sortBys = ListSet(TestFieldNoId.Timestamp.ascending))
+  pureTest("no IdField with ordering still returns Offset.First"):
+    val query = Query.empty[TestFieldNoId].copy(ordering = Vector(TestFieldNoId.Timestamp.ascending))
     val position = Position.fromQuery(query)
 
     expect.same(Position.Offset.First, position)
 
-  pureTest("non-id keyset: primary sort with extractor registered returns Keyset.First"):
+  pureTest("non-id keyset: primary order with extractor registered returns Keyset.First"):
     import WithCreatedAt.given
-    val query = Query.empty[TestField].copy(sortBys = ListSet(TestField.CreatedAt.descending))
+    val query = Query.empty[TestField].copy(ordering = Vector(TestField.CreatedAt.descending))
     val position = Position.fromQuery(query)
 
     expect.same(Position.Keyset.First, position)
 
-  pureTest("non-id keyset: secondary sort without extractor falls back to Offset.First"):
+  pureTest("non-id keyset: secondary order without extractor falls back to Offset.First"):
     import WithCreatedAt.given
     val query = Query
       .empty[TestField]
       .copy(
-        sortBys = ListSet(TestField.CreatedAt.ascending, TestField.Name.ascending)
+        ordering = Vector(TestField.CreatedAt.ascending, TestField.Name.ascending)
       )
     val position = Position.fromQuery(query)
 
     expect.same(Position.Offset.First, position)
 
-  pureTest("non-id keyset: all sort fields registered (CreatedAt + Id) returns Keyset.First"):
+  pureTest("non-id keyset: all order fields registered (CreatedAt + Id) returns Keyset.First"):
     import WithCreatedAt.given
     val query = Query
       .empty[TestField]
       .copy(
-        sortBys = ListSet(TestField.CreatedAt.ascending, TestField.Id.ascending)
+        ordering = Vector(TestField.CreatedAt.ascending, TestField.Id.ascending)
       )
     val position = Position.fromQuery(query)
 

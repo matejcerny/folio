@@ -11,7 +11,7 @@ import folio.FolioError.CursorDecodingError
   * The unique-field's value type is captured as a type member [[ID]] and inferred from the row extractor at
   * construction. A [[CursorValueCodec]] for [[ID]] is required so the cursor can serialize the keyset anchor.
   *
-  * Use [[withField]] to register additional non-unique sort fields for keyset pagination. Each registered field has a
+  * Use [[withField]] to register additional non-unique order fields for keyset pagination. Each registered field has a
   * typed extractor and a [[CursorValueCodec]] so its row value can be encoded into the cursor anchor. The
   * `T => Option[V]` overload marks the field as absentable: a missing row value encodes as [[KeysetValue.Absent]] and
   * the decoder accepts the same in that slot.

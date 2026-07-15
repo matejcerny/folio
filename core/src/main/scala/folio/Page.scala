@@ -1,7 +1,5 @@
 package folio
 
-import scala.collection.immutable.ListSet
-
 import folio.FolioError.*
 import scala.compiletime.summonFrom
 
@@ -10,7 +8,14 @@ case class Page[T](
     previousCursor: Option[Cursor],
     nextCursor: Option[Cursor],
     data: Seq[T]
-)
+):
+
+  /** Map the page data, preserving the limit and both cursors.
+    *
+    * Drivers commonly decode an internal row model and expose another; the cursors describe the query, not the row
+    * type, so they carry over unchanged.
+    */
+  def map[U](f: T => U): Page[U] = Page(limit, previousCursor, nextCursor, data.map(f))
 
 object Page:
 
@@ -18,51 +23,69 @@ object Page:
 
   /** Build a page using whichever pagination strategy [[Position.fromQuery]] selects.
     *
-    * `fetchRows` should fetch `query.limit + 1` rows for hasMore detection (callers can use [[Limit.fetchLimit]] from
-    * the supplied [[ResolvedQuery]]). The extra row is dropped before the page is returned.
+    * `fetchRows` should fetch [[ResolvedQuery.fetchLimit]] rows (one more than the page size) for hasMore detection.
+    * The extra row is dropped before the page is returned.
     *
     * Cursor-decoding failures are raised through [[FolioEffect.raiseError]]. Pure cursor decoding remains available
     * through [[Cursor.decode]], which returns `Either`.
     *
     * Keyset is selected when `KeysetField[FIELD, T]` is in scope; otherwise offset-only is used.
     *
-    * When `KeysetField[FIELD, T]` is in scope and `query.sortBys` is empty, the default ascending id sort is
-    * materialized into [[ResolvedQuery.sortBys]] so callers always receive a deterministic ordering for keyset queries.
+    * When `KeysetField[FIELD, T]` is in scope and `query.ordering` is empty, the default ascending id ordering is
+    * materialized into [[ResolvedQuery.ordering]] so callers always receive a deterministic ordering for keyset
+    * queries.
     */
   inline def withPagination[F[_]: FolioEffect, T, FIELD: FieldSchema](
       query: Query[FIELD],
       fetchRows: ResolvedQuery[FIELD] => F[Seq[T]]
   )(using CursorCodec): F[Page[T]] =
-    // Resolve KeysetField[FIELD, T] exactly once and derive every keyset-dependent input from it.
-    // Re-summoning KeysetField[FIELD, ?] further down would be ambiguous if multiple row models share the same FIELD.
     summonFrom:
       case keysetField: KeysetField[FIELD, T] =>
-        paginate(
-          query,
-          fetchRows,
-          CursorAdvance.keysetAware[FIELD, T](keysetField),
-          Position.fromQueryKeyset(query, keysetField),
-          ListSet(keysetField.field.ascending),
-          Cursor.fingerprintFor(query, keysetField.absentableFields.map(_.name)),
-          Cursor.keysetMetadataFor(keysetField)
-        )
-      case _ =>
-        paginate(
-          query,
-          fetchRows,
-          CursorAdvance.offsetOnly[FIELD, T],
-          Position.Offset.First,
-          ListSet.empty[SortBy[FIELD]],
-          Cursor.fingerprintFor(query, Set.empty),
-          Cursor.KeysetMetadata.empty[FIELD]
-        )
+        withPagination(query, fetchRows, Some(keysetField))
+      case _ => withPagination(query, fetchRows, None)
+
+  /** Build a page using an explicitly supplied keyset definition.
+    *
+    * This is the primitive entry point for adapters that also need the keyset definition when rendering a
+    * [[ResolvedQuery]]. Passing the same `Option` to both layers avoids resolving contextual metadata independently.
+    * `None` selects offset-only pagination even when a `KeysetField[FIELD, T]` is in scope.
+    */
+  def withPagination[F[_]: FolioEffect, T, FIELD: FieldSchema](
+      query: Query[FIELD],
+      fetchRows: ResolvedQuery[FIELD] => F[Seq[T]],
+      keyset: Option[KeysetField[FIELD, T]]
+  )(using CursorCodec): F[Page[T]] =
+    OrderBy.validateFields(query.ordering) match
+      case Left(error) => FolioEffect[F].raiseError(error)
+      case Right(_)    =>
+        keyset match
+          case Some(keysetField) =>
+            paginate(
+              query,
+              fetchRows,
+              CursorAdvance.keysetAware[FIELD, T](keysetField),
+              Position.fromQueryKeyset(query, keysetField),
+              Vector(keysetField.field.ascending),
+              Cursor.fingerprintFor(query, keysetField.absentableFields.map(_.name)),
+              Cursor.keysetMetadataFor(keysetField)
+            )
+          case None =>
+            paginate(
+              query,
+              fetchRows,
+              CursorAdvance.offsetOnly[FIELD, T],
+              Position.Offset.First,
+              Vector.empty[OrderBy[FIELD]],
+              Cursor.fingerprintFor(query, Set.empty),
+              Cursor.KeysetMetadata.empty[FIELD]
+            )
 
   private def paginate[F[_]: FolioEffect, T, FIELD: FieldSchema](
       query: Query[FIELD],
       fetchRows: ResolvedQuery[FIELD] => F[Seq[T]],
       advance: CursorAdvance[FIELD, T],
       firstPosition: Position,
-      defaultSortBys: ListSet[SortBy[FIELD]],
+      defaultOrdering: Vector[OrderBy[FIELD]],
       fingerprint: Int,
       keysetMetadata: Cursor.KeysetMetadata[FIELD]
   )(using CursorCodec): F[Page[T]] =
@@ -83,7 +106,7 @@ object Page:
       case Right(current) =>
         val limit = query.limit
         val isBackward = current.direction == Direction.Backward
-        val baseSortBys = if query.sortBys.nonEmpty then query.sortBys else defaultSortBys
+        val baseOrdering = if query.ordering.nonEmpty then query.ordering else defaultOrdering
 
         val (fetchPosition, reverseDisplay) = current match
           case DecodedCursor(Direction.Backward, keyset: Position.Keyset) => (keyset, true)
@@ -91,7 +114,7 @@ object Page:
           case DecodedCursor(Direction.Forward, position)                 => (position, false)
 
         val fetched = fetchRows(
-          ResolvedQuery(query.filters, baseSortBys, limit.fetchLimit, fetchPosition, current.direction)
+          ResolvedQuery(query.filters, baseOrdering, limit, fetchPosition, current.direction)
         )
         FolioEffect[F].map(fetched): rowsPlusOne =>
           val hasMore = limit.hasMore(rowsPlusOne)
@@ -103,7 +126,7 @@ object Page:
             else
               val nextCursor = Option.when(isBackward || hasMore):
                 Cursor.encodeWithFingerprint(
-                  DecodedCursor(Direction.Forward, advance.next(fetchPosition, baseSortBys, ordered, limit)),
+                  DecodedCursor(Direction.Forward, advance.next(fetchPosition, baseOrdering, ordered, limit)),
                   fingerprint
                 )
               val hasPreviousPage = fetchPosition match
@@ -115,7 +138,7 @@ object Page:
                 case _: Position.Keyset      => (isBackward && hasMore) || (!isBackward && !current.isFirst)
               val previousCursor = Option.when(hasPreviousPage):
                 Cursor.encodeWithFingerprint(
-                  DecodedCursor(Direction.Backward, advance.previous(fetchPosition, baseSortBys, ordered, limit)),
+                  DecodedCursor(Direction.Backward, advance.previous(fetchPosition, baseOrdering, ordered, limit)),
                   fingerprint
                 )
 

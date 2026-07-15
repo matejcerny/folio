@@ -22,7 +22,7 @@ Two API-shape questions arise:
    - a `Position.Keyset` resolved query paired with no `KeysetField` — there is
      no id metadata to render the tiebreaker;
    - a non-empty `Position.Keyset` anchor whose value count does not match the
-     cursor-field count (sort fields plus the appended id tiebreaker) — the
+     cursor-field count (order fields plus the appended id tiebreaker) — the
      predicate builder `zip`s fields against values, so a mismatch silently
      drops or ignores rungs.
 
@@ -33,26 +33,29 @@ An earlier design (§7 of the throwaway design doc) had `buildSql` return a bare
 
 `buildSql` takes the `KeysetField` **explicitly** as
 `keyset: Option[KeysetField[FIELD, ?]]` rather than summoning it, and returns
-**`Either[String, AppliedFragment]`**.
+**`Either[FolioError, AppliedFragment]`**.
 
 Explicit `KeysetField`: when several row models share one `FIELD` enum, a
 wildcard `summon[KeysetField[FIELD, ?]]` is ambiguous — there can be more than
-one instance in scope. Passing it explicitly removes the ambiguity and mirrors
-`Page.withPagination`, which resolves the concrete `KeysetField[FIELD, T]`
-exactly once for the same reason. Pass `Some(keysetField)` to render the keyset
-predicate; pass `None` only for an offset-positioned query.
+one instance in scope. Passing it explicitly removes the ambiguity and matches
+the explicit `Page.withPagination` overload, so adapters can resolve one option
+and pass it to both page resolution and SQL rendering. Pass `Some(keysetField)`
+to render the keyset predicate; pass `None` only for an offset-positioned query.
 
-`Either` return: both contract violations above return a `Left` with a
-descriptive message rather than emitting truncated or malformed SQL. Failing
-loud at composition time beats shipping SQL that silently drops the id
-tiebreaker (or an empty `ORDER BY`) to the database.
+`Either` return: both contract violations above return a typed
+`Left(FolioError.InvalidQuery(...))` rather than emitting truncated or malformed
+SQL. Failing loudly at composition time beats shipping SQL that silently drops
+the id tiebreaker (or an empty `ORDER BY`) to the database. The effectful
+`withPagination` entry point raises the same error unchanged through its native
+error channel.
 
 ## Consequences
 
 - The escape hatch stays usable in codebases where one `FIELD` enum backs
   several row models.
 - `None` + `Position.Keyset`, and any anchor-arity mismatch, surface as a
-  `Left` the caller can map to their own error type — never as wrong SQL.
+  typed `FolioError.InvalidQuery` the caller can map to their own error type —
+  never as wrong SQL.
 - An empty anchor (`Position.Keyset(Nil)`, the first-page request) is valid and
   renders without a `WHERE` clause.
 - This deviates from the design doc's bare-`AppliedFragment`, two-argument

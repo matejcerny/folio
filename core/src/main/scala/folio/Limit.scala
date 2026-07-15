@@ -19,7 +19,13 @@ object Limit:
 
   extension (limit: Limit)
     def value: Int = limit
-    private[folio] def fetchLimit: Limit = limit + 1
+
+    /** The number of rows a driver should fetch: one more than the page size, so [[Page.withPagination]] can detect
+      * whether a further page exists. Drivers read this (via [[ResolvedQuery.fetchLimit]]) rather than adding one
+      * themselves.
+      */
+    def fetchLimit: Limit = limit + 1
+
     private[folio] def hasMore(items: Seq[?]): Boolean = items.lengthCompare(limit) > 0
 
 extension (n: Int)

@@ -3,9 +3,7 @@ package folio.it
 import java.time.{ OffsetDateTime, ZoneOffset }
 import java.time.temporal.ChronoUnit
 
-import scala.collection.immutable.ListSet
-
-import cats.effect.{ IO, Resource }
+import cats.effect.{ IO, Ref, Resource }
 import cats.syntax.foldable.*
 import skunk.{ AppliedFragment, Codec, Command, Session, Void }
 import skunk.codec.all.{ int8, text, timestamptz }
@@ -19,10 +17,10 @@ import folio.skunk.Pagination
   * Each test owns its dataset: it truncates `rows`, inserts a fixed, known set, then walks folio's pagination forward
   * to the end and backward to the start, asserting each page's exact row contents against hand-written expected
   * sequences. These run against a real PostgreSQL (`docker compose up -d postgres`) so that real `bigint`/`timestamptz`
-  * sorting — including the `last_seen IS NULL` boundary — is exercised end to end.
+  * ordering — including the `last_seen IS NULL` boundary — is exercised end to end.
   *
   * The headline case is [[B]]: backward traversal across the `last_seen IS NULL` boundary. If it passes, folio's keyset
-  * SQL algorithm is confirmed against real Postgres sorting.
+  * SQL algorithm is confirmed against real Postgres ordering.
   */
 object IntegrationSuite extends weaver.IOSuite:
 
@@ -42,7 +40,7 @@ object IntegrationSuite extends weaver.IOSuite:
   // SnakeCase => id, name, created_at, description, last_seen — matches those columns.
 
   // LastSeen is registered via the `T => Option[V]` overload, marking it absentable. Description is deliberately not
-  // registered, so sorting by it forces the offset branch (case D).
+  // registered, so ordering by it forces the offset branch (case D).
   given KeysetField[RowField, Row] =
     KeysetField
       .uniqueBy(RowField.Id, (row: Row) => row.id)
@@ -160,7 +158,7 @@ object IntegrationSuite extends weaver.IOSuite:
   // A — keyset by Id ASC, limit 2. Canonical [1,2,3,4,5,6]; pages [1,2] [3,4] [5,6]. Backward reconstructs them in
   // reverse page order (excluding the final page): [3,4] then [1,2].
   test("A: keyset by Id ASC, limit 2 — forward to end, backward to start"): session =>
-    val query = Query(Set.empty[FilterBy[RowField]], ListSet(RowField.Id.ascending), 2.items)
+    val query = Query(limit = 2.items).orderBy(RowField.Id.ascending)
     checkWalk(
       session,
       dataset,
@@ -173,8 +171,7 @@ object IntegrationSuite extends weaver.IOSuite:
   // present-by-last_seen 1,2,4 then NULLs-by-id 3,5,6 => canonical [1,2,4,3,5,6]; pages [1,2] [4,3] [5,6]. ADR 0003:
   // backward walks the boundary in reverse => [4,3] then [1,2].
   test("B: keyset by LastSeen ASC, Id ASC, limit 2 — backward across the last_seen IS NULL boundary"): session =>
-    val query =
-      Query(Set.empty[FilterBy[RowField]], ListSet(RowField.LastSeen.ascending, RowField.Id.ascending), 2.items)
+    val query = Query(limit = 2.items).orderBy(RowField.LastSeen.ascending, RowField.Id.ascending)
     checkWalk(
       session,
       dataset,
@@ -186,8 +183,7 @@ object IntegrationSuite extends weaver.IOSuite:
   // C — keyset by LastSeen DESC, Id ASC, limit 2. DESC Forward => NULLS LAST: present-desc 4,2,1 then NULLs-by-id
   // 3,5,6 => canonical [4,2,1,3,5,6]; pages [4,2] [1,3] [5,6]. Backward => [1,3] then [4,2].
   test("C: keyset by LastSeen DESC, Id ASC, limit 2 — DESC forward NULLS LAST, backward reverse"): session =>
-    val query =
-      Query(Set.empty[FilterBy[RowField]], ListSet(RowField.LastSeen.descending, RowField.Id.ascending), 2.items)
+    val query = Query(limit = 2.items).orderBy(RowField.LastSeen.descending, RowField.Id.ascending)
     checkWalk(
       session,
       dataset,
@@ -199,7 +195,7 @@ object IntegrationSuite extends weaver.IOSuite:
   // D — offset by Description ASC, limit 2. Description is unregistered => offset branch. Distinct descriptions give a
   // total order => canonical [1,2,3,4,5,6]; pages [1,2] [3,4] [5,6]. Backward => [3,4] then [1,2].
   test("D: offset by Description ASC, limit 2 — unregistered field forces the offset branch"): session =>
-    val query = Query(Set.empty[FilterBy[RowField]], ListSet(RowField.Description.ascending), 2.items)
+    val query = Query(limit = 2.items).orderBy(RowField.Description.ascending)
     checkWalk(
       session,
       dataset,
@@ -210,7 +206,7 @@ object IntegrationSuite extends weaver.IOSuite:
 
   // E — single page (limit >= 6). One page in full canonical order, no previous/next cursor, empty backward walk.
   test("E: single page (limit 10) — one page, no previous/next cursor"): session =>
-    val query = Query(Set.empty[FilterBy[RowField]], ListSet(RowField.Id.ascending), 10.items)
+    val query = Query(limit = 10.items).orderBy(RowField.Id.ascending)
     checkWalk(
       session,
       dataset,
@@ -219,17 +215,47 @@ object IntegrationSuite extends weaver.IOSuite:
       expectedBackwardData = Nil
     )
 
+  // Resource[Session] overload — acquiring a session per call yields the same page as the primitive Session overload.
+  // The shared session is wrapped in Resource.pure (no-op finalizer), so it stays open for the concurrently-run cases.
+  test("Resource[Session] overload matches the Session overload"): session =>
+    val query = Query(limit = 2.items).orderBy(RowField.Id.ascending)
+    val sessionResource: Resource[IO, Session[IO]] = Resource.pure(session)
+    for
+      _ <- reset(session, dataset)
+      viaSession <- Pagination.withPagination[IO, Row, RowField](query, session, rowCodec)(select)
+      viaResource <- Pagination.withPagination[IO, Row, RowField](query, sessionResource, rowCodec)(select)
+    yield List(
+      expect.same(List(row1, row2), viaResource.data.toList),
+      expect.same(viaSession.data.toList, viaResource.data.toList),
+      expect.same(viaSession.nextCursor, viaResource.nextCursor),
+      expect.same(viaSession.previousCursor, viaResource.previousCursor)
+    ).combineAll
+
+  // The Resource[Session] overload must acquire the session for the call and release it afterwards. Ref counters
+  // recorded by a Resource.make wrapper around the shared session prove the finalizer runs exactly once, which
+  // Resource.pure (no-op finalizer) above cannot show.
+  test("Resource[Session] overload acquires and releases the session exactly once"): session =>
+    val query = Query(limit = 2.items).orderBy(RowField.Id.ascending)
+    for
+      _ <- reset(session, dataset)
+      acquired <- Ref[IO].of(0)
+      released <- Ref[IO].of(0)
+      sessionResource = Resource.make(acquired.update(_ + 1).as(session))(_ => released.update(_ + 1))
+      resultPage <- Pagination.withPagination[IO, Row, RowField](query, sessionResource, rowCodec)(select)
+      acquiredCount <- acquired.get
+      releasedCount <- released.get
+    yield List(
+      expect.same(List(row1, row2), resultPage.data.toList),
+      expect.same(1, acquiredCount),
+      expect.same(1, releasedCount)
+    ).combineAll
+
   // === Effect-path error handling (no rows fetched; the session is untouched because both paths short-circuit) ===
 
   // A cursor that cannot be decoded fails inside Page.withPagination before fetchRows runs, so the failure surfaces
   // through folio-skunk's FolioEffect.raiseError bridge as a FolioError in IO.
   test("malformed cursor is raised as a FolioError, not run as SQL"): session =>
-    val query = Query(
-      Set.empty[FilterBy[RowField]],
-      ListSet(RowField.Id.ascending),
-      2.items,
-      cursor = Some(Cursor("!! not base64 !!"))
-    )
+    val query = Query(limit = 2.items, cursor = Some(Cursor("!! not base64 !!"))).orderBy(RowField.Id.ascending)
     page(session, query).attempt.map:
       case Left(_: FolioError.CursorDecodingError) => success
       case other                                   => failure(s"expected a CursorDecodingError, got $other")
@@ -239,7 +265,7 @@ object IntegrationSuite extends weaver.IOSuite:
   test("fetchFromSession raises when buildSql rejects a Keyset position without keyset metadata"): session =>
     val resolvedQuery = ResolvedQuery[RowField](
       Set.empty,
-      ListSet(RowField.Id.ascending),
+      Vector(RowField.Id.ascending),
       10.items,
       Position.Keyset(List(KeysetValue.LongV(1))),
       Direction.Forward
@@ -248,5 +274,6 @@ object IntegrationSuite extends weaver.IOSuite:
       .fetchFromSession[IO, Row, RowField](resolvedQuery, session, rowCodec, select, keysetField = None)
       .attempt
       .map:
-        case Left(error) => expect(error.getMessage.contains("folio-skunk buildSql"))
-        case Right(rows) => failure(s"expected buildSql failure to raise, got $rows")
+        case Left(_: FolioError.InvalidQuery) => success
+        case Left(error)                      => failure(s"expected InvalidKeysetQuery, got $error")
+        case Right(rows)                      => failure(s"expected buildSql failure to raise, got $rows")

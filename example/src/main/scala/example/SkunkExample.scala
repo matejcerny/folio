@@ -11,7 +11,6 @@ import folio.*
 import folio.skunk.Pagination
 
 import java.time.OffsetDateTime
-import scala.collection.immutable.ListSet
 
 // Message, MessageField, and KeysetField[MessageField, Message] are defined in KeysetExample.scala.
 // Run with: sbt "example/runMain example.SkunkExample"
@@ -32,7 +31,7 @@ object SkunkExample extends IOApp.Simple:
       .use: session =>
         setup(session) *>
           IO.println("=== Paginating messages (EnqueuedAt ASC, page size 2) ===") *>
-          walkForward(session, Query(Set.empty, ListSet(MessageField.EnqueuedAt.ascending), 2.items), pageNumber = 1)
+          walkForward(session, Query(limit = 2.items).orderBy(MessageField.EnqueuedAt.ascending), pageNumber = 1)
 
   private def walkForward(session: Session[IO], query: Query[MessageField], pageNumber: Int): IO[Unit] =
     Pagination

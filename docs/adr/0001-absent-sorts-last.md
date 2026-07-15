@@ -6,8 +6,8 @@ Accepted — 2026-05-30.
 
 ## Context
 
-folio is adding first-class support for sort fields whose row values can
-be missing (see [[Absent]] in `CONTEXT.md`). Once a sort field can carry
+folio is adding first-class support for order fields whose row values can
+be missing (see [[Absent]] in `CONTEXT.md`). Once an order field can carry
 `Absent`, the ordering between an `Absent` slot and a non-`Absent` slot
 must be defined somewhere — and consistently across folio core's
 cursor-advance logic *and* every driver module that emits a backend

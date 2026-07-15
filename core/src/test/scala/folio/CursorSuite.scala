@@ -2,8 +2,6 @@ package folio
 
 import java.util.Base64
 
-import scala.collection.immutable.ListSet
-
 import cats.syntax.foldable.*
 import folio.FolioError.*
 import TestFixtures.*
@@ -81,7 +79,7 @@ object CursorSuite extends SimpleIOSuite:
   pureTest("roundtrip for keyset with three values (string, timestamp, long)"):
     val timestamp = java.time.OffsetDateTime.parse("2024-01-15T10:30:00Z")
     val query =
-      baseQuery.copy(sortBys = ListSet(TestField.Name.ascending, TestField.CreatedAt.ascending, TestField.Id.ascending))
+      baseQuery.copy(ordering = Vector(TestField.Name.ascending, TestField.CreatedAt.ascending, TestField.Id.ascending))
     val decoded = DecodedCursor(
       Direction.Forward,
       Position.Keyset(
@@ -178,9 +176,9 @@ object CursorSuite extends SimpleIOSuite:
 
     expect.sameL(CursorDecodingError.StaleCursor, decoded)
 
-  pureTest("stale cursor - sort changed"):
+  pureTest("stale cursor - ordering changed"):
     val cursor = Cursor.encode(DecodedCursor(Direction.Forward, Position.Keyset(Nil)), baseQuery)
-    val modifiedQuery = baseQuery.copy(sortBys = ListSet(TestField.Name.ascending))
+    val modifiedQuery = baseQuery.copy(ordering = Vector(TestField.Name.ascending))
     val decoded = Cursor.decode(cursor, modifiedQuery)
 
     expect.sameL(CursorDecodingError.StaleCursor, decoded)
@@ -386,7 +384,7 @@ object CursorSuite extends SimpleIOSuite:
       KeysetField
         .uniqueBy(TestField.Id, (row: Row) => row.id)
         .withField(TestField.LastSeen, (row: Row) => row.lastSeen)
-    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.LastSeen.ascending))
+    val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.LastSeen.ascending))
     val decoded =
       DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5L))))
     val cursor = Cursor.encode(decoded, query)
@@ -399,7 +397,7 @@ object CursorSuite extends SimpleIOSuite:
       KeysetField
         .uniqueBy(TestField.Id, (row: Row) => row.id)
         .withField(TestField.Name, (row: Row) => row.name)
-    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Name.ascending))
+    val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.Name.ascending))
     // Forge a cursor with Absent in the Name slot (Name is registered required, not absentable).
     val decoded =
       DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(7L))))
@@ -412,7 +410,7 @@ object CursorSuite extends SimpleIOSuite:
     )
 
   pureTest("decode rejects a forged variant in the id slot (StringV where Long expected)"):
-    // No sort fields, so the only cursor field is the Long id. Forge a StringV into that slot: it would otherwise
+    // No order fields, so the only cursor field is the Long id. Forge a StringV into that slot: it would otherwise
     // reach the SQL driver as a `bigint > text` bind and raise through F instead of a CursorDecodingError.
     val decoded = DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.StringV("not-a-long"))))
     val cursor = Cursor.encode(decoded, baseQuery)
@@ -423,12 +421,12 @@ object CursorSuite extends SimpleIOSuite:
       roundtrip
     )
 
-  pureTest("decode rejects a forged variant in a registered sort slot"):
+  pureTest("decode rejects a forged variant in a registered order slot"):
     given KeysetField[TestField, Row] =
       KeysetField
         .uniqueBy(TestField.Id, (row: Row) => row.id)
         .withField(TestField.Name, (row: Row) => row.name)
-    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Name.ascending))
+    val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.Name.ascending))
     // Name expects StringV; forge a LongV into that slot while keeping the id slot valid.
     val decoded =
       DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.LongV(1L), KeysetValue.LongV(7L))))
@@ -441,7 +439,7 @@ object CursorSuite extends SimpleIOSuite:
     )
 
   pureTest("decode surfaces arity mismatch before a forged variant when both would fire"):
-    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Name.ascending))
+    val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.Name.ascending))
     // Wrong arity (3 values for 2 cursor fields) AND a forged variant in the first slot: arity wins.
     val decoded =
       DecodedCursor(
@@ -458,7 +456,7 @@ object CursorSuite extends SimpleIOSuite:
       KeysetField
         .uniqueBy(TestField.Id, (row: Row) => row.id)
         .withField(TestField.LastSeen, (row: Row) => row.lastSeen)
-    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.LastSeen.ascending))
+    val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.LastSeen.ascending))
     val decoded =
       DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5L))))
     val cursor = Cursor.encode(decoded, query)
@@ -467,7 +465,7 @@ object CursorSuite extends SimpleIOSuite:
     expect.sameR(decoded, roundtrip)
 
   pureTest("decode rejects keyset cursor with too few values"):
-    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Name.ascending))
+    val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.Name.ascending))
     val decoded =
       DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.LongV(7L))))
     val cursor = Cursor.encode(decoded, query)
@@ -476,7 +474,7 @@ object CursorSuite extends SimpleIOSuite:
     expect.sameL(CursorDecodingError.IncompatibleCursor("keyset arity does not match query"), roundtrip)
 
   pureTest("decode rejects keyset cursor with too many values"):
-    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Name.ascending))
+    val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.Name.ascending))
     val decoded =
       DecodedCursor(
         Direction.Forward,
@@ -488,7 +486,7 @@ object CursorSuite extends SimpleIOSuite:
     expect.sameL(CursorDecodingError.IncompatibleCursor("keyset arity does not match query"), roundtrip)
 
   pureTest("decode accepts empty keyset cursor (first-page) regardless of expected arity"):
-    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Name.ascending))
+    val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.Name.ascending))
     val decoded = DecodedCursor(Direction.Forward, Position.Keyset(Nil))
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
@@ -496,7 +494,7 @@ object CursorSuite extends SimpleIOSuite:
     expect.sameR(decoded, roundtrip)
 
   pureTest("decode surfaces arity mismatch before Absent-in-required when both would fire"):
-    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.Name.ascending))
+    val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.Name.ascending))
     val decoded =
       DecodedCursor(
         Direction.Forward,
@@ -515,7 +513,7 @@ object CursorSuite extends SimpleIOSuite:
 
     given KeysetField[AliasField, Row] = KeysetField.uniqueBy(AliasField.Id, (row: Row) => row.id)
 
-    val query = Query.empty[AliasField].copy(sortBys = ListSet(AliasField.IdAlias.ascending))
+    val query = Query.empty[AliasField].copy(ordering = Vector(AliasField.IdAlias.ascending))
     val decoded =
       DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.LongV(7L), KeysetValue.LongV(42L))))
     val cursor = Cursor.encode(decoded, query)
@@ -524,7 +522,7 @@ object CursorSuite extends SimpleIOSuite:
     expect.sameR(decoded, roundtrip)
 
   pureTest("toggling a field from required to absentable produces a different fingerprint (StaleCursor)"):
-    val query = TestFixtures.emptyQueryWithId.copy(sortBys = ListSet(TestField.LastSeen.ascending))
+    val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.LastSeen.ascending))
     val cursor =
       locally:
         given KeysetField[TestField, Row] =

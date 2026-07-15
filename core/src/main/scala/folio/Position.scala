@@ -32,10 +32,10 @@ object Position:
 
   /** Picks the pagination strategy from a [[Query]]:
     *   - When [[KeysetField]] is available:
-    *     - All sort fields registered (via `KeysetField.apply` / `.withField`) -> [[Keyset]] (O(1) seek)
-    *     - Any sort field not registered -> [[Offset]] (offset fallback)
-    *     - No sort specified -> [[Keyset]] with default ascending id sort (materialized into [[ResolvedQuery.sortBys]]
-    *       by [[Page.withPagination]])
+    *     - All order fields registered (via `KeysetField.uniqueBy` / `.withField`) -> [[Keyset]] (O(1) seek)
+    *     - Any order field not registered -> [[Offset]] (offset fallback)
+    *     - No ordering specified -> [[Keyset]] with default ascending id ordering (materialized into
+    *       [[ResolvedQuery.ordering]] by [[Page.withPagination]])
     *   - When [[KeysetField]] is not available:
     *     - Always [[Offset]] (offset)
     */
@@ -48,7 +48,7 @@ object Position:
       query: Query[FIELD],
       keysetField: KeysetField[FIELD, ?]
   ): Position =
-    val sortFields = query.sortBys.toList.map(_.field)
-    if sortFields.isEmpty then Keyset.First
-    else if sortFields.forall(keysetField.fields.contains) then Keyset.First
+    val orderingFields = query.ordering.toList.map(_.field)
+    if orderingFields.isEmpty then Keyset.First
+    else if orderingFields.forall(keysetField.fields.contains) then Keyset.First
     else Offset.First

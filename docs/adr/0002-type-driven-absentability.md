@@ -6,7 +6,7 @@ Accepted — 2026-05-30.
 
 ## Context
 
-folio is adding support for sort fields whose row values can be missing
+folio is adding support for order fields whose row values can be missing
 (see [[Absent]] in `CONTEXT.md` and ADR 0001). The user must somehow
 declare "this field's row values are absentable" so that:
 

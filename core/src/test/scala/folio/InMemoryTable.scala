@@ -1,49 +1,48 @@
 package folio
 
-import scala.collection.immutable.ListSet
 import scala.compiletime.summonFrom
 
 final class InMemoryTable[FIELD: FieldSchema, T](rows: Vector[T], extract: (FIELD, T) => Option[String]):
 
   inline def fetch(resolved: ResolvedQuery[FIELD]): Seq[T] =
     val filtered = rows.filter(matches(_, resolved.filters))
-    // Backward traversal reverses sort and Absent placement (ADR 0003), but only for keyset seeks:
+    // Backward traversal reverses ordering and Absent placement (ADR 0003), but only for keyset seeks:
     // an offset position already encodes the absolute slot of the previous page, so direction is a no-op.
     val reverseTraversal = resolved.direction == Direction.Backward && resolved.position.isInstanceOf[Position.Keyset]
-    val sorted = applySort(filtered, resolved.sortBys, reverseTraversal)
-    val skipped = applyPosition(sorted, resolved.position, resolved.sortBys)
-    skipped.take(resolved.limit.value)
+    val ordered = applyOrdering(filtered, resolved.ordering, reverseTraversal)
+    val skipped = applyPosition(ordered, resolved.position, resolved.ordering)
+    skipped.take(resolved.fetchLimit.value)
 
   private def matches(row: T, filters: Set[FilterBy[FIELD]]): Boolean =
     filters.forall:
       case FilterBy.ExactMatch(field, value) => extract(field, row).contains(value)
 
-  private def applySort(rows: Vector[T], sortBys: ListSet[SortBy[FIELD]], reverseTraversal: Boolean): Vector[T] =
-    if sortBys.isEmpty then rows
+  private def applyOrdering(rows: Vector[T], ordering: Vector[OrderBy[FIELD]], reverseTraversal: Boolean): Vector[T] =
+    if ordering.isEmpty then rows
     else
-      val orderings = sortBys.toList.map: sortBy =>
-        val ordering = (reverseTraversal, sortBy.order) match
+      val orderings = ordering.toList.map: orderBy =>
+        val valueOrdering = (reverseTraversal, orderBy.order) match
           case (false, Order.Ascending)  => InMemoryTable.absentLastAscending
           case (false, Order.Descending) => InMemoryTable.absentLastDescending
           case (true, Order.Ascending)   => InMemoryTable.absentFirstDescending
           case (true, Order.Descending)  => InMemoryTable.absentFirstAscending
-        Ordering.by(extract(sortBy.field, _: T))(using ordering)
+        Ordering.by(extract(orderBy.field, _: T))(using valueOrdering)
 
       rows.sorted(using orderings.reduceLeft(_.orElse(_)))
 
   private inline def applyPosition(
-      sorted: Vector[T],
+      ordered: Vector[T],
       position: Position,
-      sortBys: ListSet[SortBy[FIELD]]
+      ordering: Vector[OrderBy[FIELD]]
   ): Vector[T] =
     position match
-      case Position.Offset(offset) => sorted.drop(offset.toInt)
-      case Position.Keyset(Nil)    => sorted
+      case Position.Offset(offset) => ordered.drop(offset.toInt)
+      case Position.Keyset(Nil)    => ordered
       case Position.Keyset(values) =>
         summonFrom:
           case keysetField: KeysetField[FIELD, T] =>
-            val cursorFields = CursorAdvance.cursorFieldsFor(sortBys, keysetField.field)
-            val anchor = sorted.indexWhere: row =>
+            val cursorFields = CursorAdvance.cursorFieldsFor(ordering, keysetField.field)
+            val anchor = ordered.indexWhere: row =>
               cursorFields
                 .zip(values)
                 .forall: (field, expected) =>
@@ -51,9 +50,9 @@ final class InMemoryTable[FIELD: FieldSchema, T](rows: Vector[T], extract: (FIEL
                     .get(field)
                     .map(_.encodedFromRow(row) == expected)
                     .getOrElse(keysetField.codec.toKeysetValue(keysetField.rowId(row)) == expected)
-            if anchor < 0 then sorted else sorted.drop(anchor + 1)
+            if anchor < 0 then ordered else ordered.drop(anchor + 1)
 
-          case _ => sorted
+          case _ => ordered
 
 private object InMemoryTable:
 
@@ -75,7 +74,7 @@ private object InMemoryTable:
         case (Some(_), None)    => true
         case (Some(l), Some(r)) => l > r
 
-  // ADR 0003: backward traversal reverses both sort order and Absent placement, so the reverse
+  // ADR 0003: backward traversal reverses both order and Absent placement, so the reverse
   // seek crosses the Some/Absent boundary in the same canonical sequence walked in reverse.
   val absentFirstAscending: Ordering[Option[String]] =
     Ordering.fromLessThan: (lhs, rhs) =>

@@ -13,7 +13,7 @@ object MultiRowKeysetSuite extends SimpleIOSuite:
 
   given KeysetField[TestField, AuditRow] = KeysetField.uniqueBy(TestField.Id, (row: AuditRow) => row.id)
 
-  private val baseQuery: Query[TestField] = TestFixtures.queryWithIdSort.copy(limit = 2.items)
+  private val baseQuery: Query[TestField] = TestFixtures.queryWithIdOrdering.copy(limit = 2.items)
 
   pureTest("withPagination dispatches on concrete T when two KeysetField givens share the same FIELD"):
     val rowPage: Page[Row] =

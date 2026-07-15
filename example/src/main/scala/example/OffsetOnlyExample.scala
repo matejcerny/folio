@@ -2,9 +2,7 @@ package example
 
 import folio.*
 
-import scala.collection.immutable.ListSet
-
-// Step 1: Define the fields your entity can be sorted/filtered by
+// Step 1: Define the fields your entity can be ordered/filtered by
 enum EventField:
   case Timestamp, Source
 
@@ -19,11 +17,7 @@ case class Event(timestamp: String, source: String)
 @main def runOffsetOnlyExample(): Unit =
   val rows = Seq(Event("2024-01-01", "api"), Event("2024-01-02", "api"))
 
-  val query = Query(
-    filters = Set.empty,
-    sortBys = ListSet(EventField.Timestamp.ascending),
-    limit = 1.items
-  )
+  val query = Query(limit = 1.items).orderBy(EventField.Timestamp.ascending)
 
   // Build a Page of results using the pagination helper.
   val page = Page.withPagination[FolioEffect.Id, Event, EventField](query, _ => rows)

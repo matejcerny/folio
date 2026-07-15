@@ -6,7 +6,7 @@ Accepted — 2026-06-12.
 
 ## Context
 
-A `Query[FIELD]` carries `filters` alongside its cursor, limit, and sort. A SQL
+A `Query[FIELD]` carries `filters` alongside its cursor, limit, and ordering. A SQL
 driver could translate those filters into `WHERE` predicates. The Skunk driver,
 however, already wraps an opaque user-supplied `SELECT` (see ADR 0004), and that
 `SELECT` is the natural place for the caller to express filtering — with full
@@ -29,7 +29,7 @@ escape hatch. Filters continue to feed the cursor fingerprint in core.
 - Stale-cursor detection still reacts to filter changes, because the fingerprint
   is computed in core from the full `Query`, independent of what the driver
   renders.
-- **Forward-compat trap:** the ADR 0004 contract that sort/keyset columns must
+- **Forward-compat trap:** the ADR 0004 contract that order/keyset columns must
   be projected by the inner `SELECT` will *tighten* once filter rendering lands.
   A `SELECT` that is valid today could begin to error when folio starts emitting
   filter predicates against columns the projection does not expose. This is

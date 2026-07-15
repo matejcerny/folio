@@ -12,15 +12,15 @@ different relative order on each execution, so paging with a fixed offset can
 **skip or duplicate** rows across pages.
 
 The Skunk driver's `renderOffset` originally built `ORDER BY` from the user's
-sort fields alone — or emitted **no** `ORDER BY` when there were none — leaving
-every non-total sort exposed to this hazard.
+order fields alone — or emitted **no** `ORDER BY` when there were none — leaving
+every non-total order exposed to this hazard.
 
 The keyset branch already avoids it: `renderKeyset` uses
-`CursorAdvance.cursorFieldsFor(sortBys, idField)` to append the unique id field
+`CursorAdvance.cursorFieldsFor(ordering, idField)` to append the unique id field
 as a tiebreaker, so the keyset `ORDER BY` is always total.
 
 Offset-with-a-`KeysetField` is a real, reachable path.
-`Position.fromQueryKeyset` falls back to `Offset` whenever any sort field is not
+`Position.fromQueryKeyset` falls back to `Offset` whenever any order field is not
 registered for keyset, and in that case the unique id field is still available —
 it was simply unused for ordering. `buildSql` already receives the
 `KeysetField`; the offset branch just dropped it.
@@ -35,12 +35,12 @@ field — the id carried by a `KeysetField`.
 `renderOffset` reuses the same cursor-field logic as the keyset branch:
 
 - `Some(keysetField)` → order by
-  `CursorAdvance.cursorFieldsFor(resolved.sortBys, keysetField.field)`, i.e. the
-  sort fields with the unique id appended as a tiebreaker when it is not already
-  a sort field. This yields a total order and stable offset paging.
-- `None` → order by the sort fields alone (unchanged). folio has no designated
+  `CursorAdvance.cursorFieldsFor(resolved.ordering, keysetField.field)`, i.e. the
+  order fields with the unique id appended as a tiebreaker when it is not already
+  an order field. This yields a total order and stable offset paging.
+- `None` → order by the order fields alone (unchanged). folio has no designated
   unique field to append, so the **caller owns total ordering**: they must
-  ensure the `select` plus its sort fields already yield a total order, or
+  ensure the `select` plus its order fields already yield a total order, or
   `OFFSET` paging may skip/duplicate rows.
 
 The appended id is a column reference, not a bound value, so no encoder types
@@ -49,7 +49,7 @@ with no `NULLS` clause — identical to the keyset forward orientation. Offset i
 absolute, so direction stays `Direction.Forward`.
 
 The empty → no-`ORDER BY` guard is retained; it now only triggers on `None` with
-no sort fields.
+no order fields.
 
 ## Consequences
 
@@ -65,7 +65,7 @@ no sort fields.
 
 - **Append a tiebreaker even without a `KeysetField`.** Rejected: folio has no
   designated unique field to append, and it cannot detect whether an arbitrary
-  user sort column is unique. There is nothing correct to append.
+  user order column is unique. There is nothing correct to append.
 - **Reject `None` + offset queries that lack a total order.** Rejected:
   uniqueness of arbitrary user columns is not detectable from `FieldSchema`, so
   the condition cannot be enforced. Documenting the caller responsibility is the
