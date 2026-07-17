@@ -5,13 +5,14 @@ ThisBuild / startYear := Some(2026)
 ThisBuild / licenses := Seq(License.MIT)
 
 // === VERSIONS ===
+val CatsV = "2.13.0"
 val WeaverV = "0.12.0"
 val SkunkV = "1.0.0"
 
 // === MODULES ===
 lazy val root = project
   .in(file("."))
-  .aggregate(core, skunk, integration, example)
+  .aggregate(core, cats, skunk, integration, example)
   .settings(
     name := "folio",
     publish / skip := true
@@ -28,9 +29,20 @@ lazy val core = project
   )
   .settings(scaladoc *)
 
+lazy val cats = project
+  .in(file("module/effect/cats"))
+  .dependsOn(core)
+  .settings(
+    name := "folio-cats",
+    libraryDependencies ++= Seq(
+      "org.typelevel" %% "cats-core" % CatsV,
+      "org.typelevel" %% "weaver-cats" % WeaverV % Test
+    )
+  )
+
 lazy val skunk = project
   .in(file("module/database/skunk"))
-  .dependsOn(core)
+  .dependsOn(cats)
   .settings(
     name := "folio-skunk",
     libraryDependencies ++= Seq(

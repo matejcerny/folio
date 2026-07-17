@@ -11,16 +11,13 @@ import skunk.codec.all.{ int4, int8, text, timestamptz }
 import skunk.implicits.*
 
 import folio.*
+import folio.cats.given
 
 /** Skunk-backed cursor pagination.
   *
   * [[withPagination]] is the end-to-end entry point; [[buildSql]] exposes its pure SQL-composition layer.
   */
 object Pagination:
-
-  private given folioEffect[F[_]](using concurrent: Concurrent[F]): FolioEffect[F] with
-    def map[A, B](effect: F[A])(transform: A => B): F[B] = concurrent.map(effect)(transform)
-    def raiseError[A](error: FolioError): F[A] = concurrent.raiseError(error)
 
   /** Paginate an opaque `select` using the supplied Skunk session and decoder.
     *

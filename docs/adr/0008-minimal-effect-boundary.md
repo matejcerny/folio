@@ -31,10 +31,12 @@ therefore a much larger ecosystem commitment than the implementation needs.
 `Applicative` and returns `F[Page[T]]`.
 
 The companion supplies synchronous `FolioEffect.Id` and standard-library
-`Future` instances. Other ecosystems provide the two native operations at
-their boundary. Driver modules hide that bridge where possible; for example,
-`folio-skunk` derives `FolioEffect[F]` internally from the `Concurrent[F]` that
-Skunk already requires.
+`Future` instances. The optional `folio-cats` module derives `FolioEffect[F]`
+from Cats `ApplicativeError[F, Throwable]`; direct Cats and Cats Effect callers
+opt in by importing its given. Other ecosystems provide the two native
+operations at their boundary. Driver modules hide that bridge where possible;
+for example, `folio-skunk` imports the `folio-cats` bridge internally and its
+existing `Concurrent[F]` constraint supplies the required `ApplicativeError`.
 
 Effectful Folio APIs raise `FolioError` in the backend's native failure channel
 rather than exposing two error channels as `F[Either[FolioError, A]]`. The
@@ -61,8 +63,9 @@ larger build and publication surface.
 - Cats Effect, ZIO, Kyo, `Future`, direct-style code, and synchronous code can
   all use the same core API without running a foreign effect system.
 - Direct users of `Page.withPagination` need a `FolioEffect[F]` instance for
-  effect types other than the supplied `Id` and `Future`; the instance is only
-  two methods.
+  effect types other than the supplied `Id` and `Future`. Cats and Cats Effect
+  users can import the instance from `folio-cats`; other integrations need only
+  implement the two methods.
 - Effectful consumers handle one native failure channel. They can still recover
   specifically from `FolioError` using their ecosystem's ordinary error
   operators.
@@ -74,10 +77,11 @@ larger build and publication surface.
 
 ## Alternatives rejected
 
-- **Use Cats `ApplicativeError` / `MonadError`.** Rejected: it makes every core
-  consumer depend on Cats for two operations that have native equivalents in
-  every target ecosystem, and asks unlawful/direct-style backends to pretend
-  they implement a larger lawful abstraction.
+- **Use Cats `ApplicativeError` / `MonadError` in `folio-core`.** Rejected: it
+  makes every core consumer depend on Cats for two operations that have native
+  equivalents in every target ecosystem, and asks unlawful/direct-style
+  backends to pretend they implement a larger lawful abstraction. The optional
+  `folio-cats` adapter does use `ApplicativeError` at the Cats boundary.
 - **Return `F[Either[FolioError, A]]`.** Rejected: it exposes two competing
   failure channels and forces effectful callers to unwrap a domain error that
   every supported backend can represent natively. Pure APIs keep `Either`.
