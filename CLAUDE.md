@@ -4,11 +4,13 @@ Scala 3 cursor-based pagination library.
 
 ## Modules
 
-- `core` — main library (`folio-core`), no runtime dependencies (Weaver/Cats are test-only)
-- `module/effect/cats` — optional Cats adapter (`folio-cats`), derives `FolioEffect` from `ApplicativeError`
-- `module/database/skunk` — Skunk integration (`folio-skunk`), depends on `folio-cats`
-- `it` — PostgreSQL integration tests, not published
-- `example` — usage example, not published
+- `core` — main library (`folio-core`), no runtime dependencies (Weaver is test-only); JVM / JS / Native
+- `module/effect/cats` — optional Cats adapter (`folio-cats`), derives `FolioEffect` from `ApplicativeError`; JVM / JS / Native
+- `module/database/skunk` — Skunk integration (`folio-skunk`), depends on `folio-cats`; JVM / JS / Native
+- `it` — PostgreSQL integration tests (JVM + Native), not published
+- `example` — usage example (JVM only), not published
+
+Cross-building uses sbt 2 `projectMatrix` (no sbt-typelevel). JVM keeps the short project name; JS/Native rows are `*JS` / `*Native`.
 
 ## Key types
 
@@ -77,15 +79,31 @@ Pure decoding APIs continue to return `Either`.
 
 ## Build
 
+The project uses SBT 2 with a separate server. Prefer `--client`:
+
 ```
-sbt --client cleanFull
-sbt --client compile
-sbt --client test
+sbt --client compile                # compile all aggregated modules, all platforms
+sbt --client core/compile           # compile core for JVM
+sbt --client coreJS/test            # run core tests on JS
+sbt --client coreNative/test        # run core tests on Native
+sbt --client test                   # unit + integration tests for all aggregated platforms
+sbt --client integration/test       # Postgres integration tests (JVM)
+sbt --client integrationNative/test # Postgres integration tests (Native)
+sbt --client publishLocal           # publish all non-skipped modules locally
 sbt --client example/run
+sbt --client scalafmtAll
+sbt --client clean                  # clear outputs when you need a full re-run
 ```
+
+Module names: `core`, `coreJS`, `coreNative`, `cats`, `catsJS`, `catsNative`,
+`skunk`, `skunkJS`, `skunkNative`, `integration`, `integrationNative`, `example`.
+
+Cross-compilation uses sbt 2 `projectMatrix` with a single shared source tree per module. Integration is JVM +
+Native only. Versions and dependencies are defined inline in `build.sbt`. Cross-built deps use `%%` (sbt 2
+appends the platform suffix).
 
 Tests use [weaver-cats](https://typelevel.org/weaver-test/).
 
-With sbt 2, `sbt --client test` can return a cached no-op result when no code or test inputs changed since the latest
-test run. In that case the output may say `Passed: Total 0` / `No tests to run`, which means nothing was re-executed,
-not that test discovery is broken. Run `sbt --client cleanFull` first when you need to force the suites to execute again.
+With sbt 2, `test` is incremental: if nothing relevant changed it may report `Passed: Total 0` / `No tests to run`.
+That means nothing was re-executed, not that discovery is broken. Run `sbt --client clean` first when you need
+every suite to execute again.

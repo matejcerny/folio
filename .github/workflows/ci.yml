@@ -26,10 +26,10 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -38,19 +38,29 @@ jobs:
       - name: Set up sbt
         uses: sbt/setup-sbt@v1
 
+      - name: Install native dependencies
+        run: sudo apt-get install -y libutf8proc-dev
+
       - name: Initialize database schema
         run: psql -h localhost -U folio -d folio -f it/sql/init.sql
         env:
           PGPASSWORD: folio
 
-      - name: Run unit tests with coverage
-        run: sbt "; coverage; test; coverageAggregate"
+      # Coverage is JVM-only
+      - name: Run JVM unit + integration tests with coverage
+        run: sbt "; coverage; core/test; cats/test; skunk/test; integration/test; coverageAggregate; coverageOff"
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: target/out/jvm/scala-3.3.7/folio/scoverage-report/scoverage.xml
+          files: target/out/jvm/scala-3.3.8/folio/scoverage-report/scoverage.xml
+
+      - name: Run JS unit tests
+        run: sbt "; coverageOff; coreJS/test; catsJS/test; skunkJS/test"
+
+      - name: Run Native unit + integration tests
+        run: sbt "; coverageOff; coreNative/test; catsNative/test; skunkNative/test; integrationNative/test"
 
   scalafmt:
     runs-on: ubuntu-latest
@@ -59,7 +69,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'

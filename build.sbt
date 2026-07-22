@@ -1,73 +1,90 @@
-ThisBuild / scalaVersion := "3.3.7"
+ThisBuild / scalaVersion := "3.3.8"
 ThisBuild / organization := "io.github.matejcerny"
 ThisBuild / organizationName := "Matej Cerny"
 ThisBuild / startYear := Some(2026)
 ThisBuild / licenses := Seq(License.MIT)
+// Scala Native 0.5.12 vs older test-interface pulled by scalacheck/weaver — safe for pre-alpha.
+ThisBuild / evictionErrorLevel := Level.Warn
 
-// === VERSIONS ===
-val CatsV = "2.13.0"
-val WeaverV = "0.12.0"
-val SkunkV = "1.0.0"
+val Scala3 = "3.3.8"
 
 // === MODULES ===
+lazy val jsNativeSettings = Seq(
+  coverageEnabled := false
+)
+
 lazy val root = project
   .in(file("."))
-  .aggregate(core, cats, skunk, integration, example)
+  .aggregate(
+    core.jvm(Scala3),
+    core.js(Scala3),
+    core.native(Scala3),
+    cats.jvm(Scala3),
+    cats.js(Scala3),
+    cats.native(Scala3),
+    skunk.jvm(Scala3),
+    skunk.js(Scala3),
+    skunk.native(Scala3),
+    integration.jvm(Scala3),
+    integration.native(Scala3),
+    example
+  )
   .settings(
     name := "folio",
     publish / skip := true
   )
 
-lazy val core = project
-  .in(file("core"))
+lazy val core = (projectMatrix in file("core"))
   .settings(
     name := "folio-core",
-    libraryDependencies ++= Seq(
-      "org.typelevel" %% "weaver-cats" % WeaverV % Test,
-      "org.typelevel" %% "weaver-scalacheck" % WeaverV % Test
+    libraryDependencies ++= Dependencies.Weaver
+  )
+  .jvmPlatform(
+    scalaVersions = Seq(Scala3),
+    settings = scaladoc
+  )
+  .jsPlatform(
+    scalaVersions = Seq(Scala3),
+    settings = jsNativeSettings ++ Seq(
+      libraryDependencies ++= Dependencies.ScalaJavaTime
     )
   )
-  .settings(scaladoc *)
+  .nativePlatform(scalaVersions = Seq(Scala3), settings = jsNativeSettings)
 
-lazy val cats = project
-  .in(file("module/effect/cats"))
+lazy val cats = (projectMatrix in file("module/effect/cats"))
   .dependsOn(core)
   .settings(
     name := "folio-cats",
-    libraryDependencies ++= Seq(
-      "org.typelevel" %% "cats-core" % CatsV,
-      "org.typelevel" %% "weaver-cats" % WeaverV % Test
-    )
+    libraryDependencies ++= Dependencies.Cats ++ Dependencies.WeaverCats
   )
+  .jvmPlatform(scalaVersions = Seq(Scala3))
+  .jsPlatform(scalaVersions = Seq(Scala3), settings = jsNativeSettings)
+  .nativePlatform(scalaVersions = Seq(Scala3), settings = jsNativeSettings)
 
-lazy val skunk = project
-  .in(file("module/database/skunk"))
+lazy val skunk = (projectMatrix in file("module/database/skunk"))
   .dependsOn(cats)
   .settings(
     name := "folio-skunk",
-    libraryDependencies ++= Seq(
-      "org.tpolecat" %% "skunk-core" % SkunkV,
-      "org.typelevel" %% "weaver-cats" % WeaverV % Test,
-      "org.typelevel" %% "weaver-scalacheck" % WeaverV % Test
-    )
+    libraryDependencies ++= Dependencies.Skunk ++ Dependencies.Weaver
   )
+  .jvmPlatform(scalaVersions = Seq(Scala3))
+  .jsPlatform(scalaVersions = Seq(Scala3), settings = jsNativeSettings)
+  .nativePlatform(scalaVersions = Seq(Scala3), settings = jsNativeSettings)
 
-lazy val integration = project
-  .in(file("it"))
+lazy val integration = (projectMatrix in file("it"))
   .dependsOn(skunk, core % "test->test")
   .settings(
     name := "folio-it",
     publish / skip := true,
     Test / parallelExecution := false,
-    libraryDependencies ++= Seq(
-      "org.typelevel" %% "weaver-cats" % WeaverV % Test,
-      "org.typelevel" %% "weaver-scalacheck" % WeaverV % Test
-    )
+    libraryDependencies ++= Dependencies.Weaver
   )
+  .jvmPlatform(scalaVersions = Seq(Scala3))
+  .nativePlatform(scalaVersions = Seq(Scala3), settings = jsNativeSettings)
 
 lazy val example = project
   .in(file("example"))
-  .dependsOn(core, skunk)
+  .dependsOn(core.jvm(Scala3), skunk.jvm(Scala3))
   .settings(
     name := "folio-example",
     publish / skip := true,
@@ -76,7 +93,7 @@ lazy val example = project
 
 // === SCALADOC ===
 val scaladoc = Seq(
-  // sbt-typelevel sets -project to the module name; replace with the top-level project name
+  // Replace the module name with the top-level project name in generated docs
   Compile / doc / scalacOptions ~= (_.map { case "folio-core" => "folio"; case other => other }),
   Compile / doc / scalacOptions ++= Seq(
     "-siteroot",
