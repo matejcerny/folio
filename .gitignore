@@ -19,6 +19,7 @@ tramp
 .mcp.json
 .cellar
 .scalex
+plans/
 # Logfiles and rotated logfiles.
 *.log
 *.log.[0-9]*
