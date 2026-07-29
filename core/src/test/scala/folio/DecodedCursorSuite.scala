@@ -1,24 +1,3 @@
-/*
- * Copyright (c) 2026 Matej Cerny
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 package folio
 
 import cats.syntax.foldable.*
@@ -55,7 +34,7 @@ object DecodedCursorSuite extends SimpleIOSuite:
 
   pureTest("toCursor / toDecodedCursor roundtrip via extension methods"):
     val query = TestFixtures.emptyQueryWithId
-    val decoded = DecodedCursor(Direction.Backward, Position.Keyset(List(KeysetValue.LongV(7L))))
+    val decoded = DecodedCursor(Direction.Backward, Position.Keyset(List(FieldValue.LongV(7L).present)))
     val cursor = decoded.encode(query)
     val roundtrip = cursor.decode(query)
 
@@ -72,5 +51,5 @@ object DecodedCursorSuite extends SimpleIOSuite:
       expect(!DecodedCursor(Direction.Backward, Position.Keyset.First).isFirst),
       expect(!DecodedCursor(Direction.Backward, Position.Offset.First).isFirst),
       expect(!DecodedCursor(Direction.Forward, Position.Offset.unsafe(5)).isFirst),
-      expect(!DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.LongV(1)))).isFirst)
+      expect(!DecodedCursor(Direction.Forward, Position.Keyset(List(FieldValue.LongV(1).present))).isFirst)
     ).combineAll

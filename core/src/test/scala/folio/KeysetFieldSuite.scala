@@ -1,24 +1,3 @@
-/*
- * Copyright (c) 2026 Matej Cerny
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 package folio
 
 import scala.compiletime.testing.typeCheckErrors
@@ -62,7 +41,7 @@ object KeysetFieldSuite extends SimpleIOSuite:
       .withField(TestField.LastSeen, _.lastSeen)
     expect.same(Set[TestField](TestField.LastSeen), keysetField.absentableFields)
 
-  pureTest("absentable extractor encodes None as KeysetValue.Absent and Some as the inner codec value"):
+  pureTest("absentable extractor encodes None as AnchorValue.Absent and Some as the inner codec value"):
     val keysetField = KeysetField
       .uniqueBy(TestField.Id, (row: Row) => row.id)
       .withField(TestField.LastSeen, _.lastSeen)
@@ -70,8 +49,8 @@ object KeysetFieldSuite extends SimpleIOSuite:
     val rowWithValue = Row(0L, "alice", "2024-01-01", "2024-01-01", Some("2024-02-03"))
     val rowAbsent = Row(0L, "alice", "2024-01-01", "2024-01-01", None)
     List(
-      expect.same(KeysetValue.StringV("2024-02-03"), extractor.encodedFromRow(rowWithValue)),
-      expect.same(KeysetValue.Absent, extractor.encodedFromRow(rowAbsent)),
+      expect.same(FieldValue.StringV("2024-02-03").present, extractor.encodedFromRow(rowWithValue)),
+      expect.same(AnchorValue.Absent, extractor.encodedFromRow(rowAbsent)),
       expect(extractor.isAbsentable)
     ).combineAll
 
@@ -82,7 +61,7 @@ object KeysetFieldSuite extends SimpleIOSuite:
     val extractor = keysetField.fields(TestField.Name)
     val row = Row(0L, "alice", "2024-01-01", "2024-01-01", None)
     List(
-      expect.same(KeysetValue.StringV("alice"), extractor.encodedFromRow(row)),
+      expect.same(FieldValue.StringV("alice").present, extractor.encodedFromRow(row)),
       expect(!extractor.isAbsentable)
     ).combineAll
 
@@ -92,6 +71,6 @@ object KeysetFieldSuite extends SimpleIOSuite:
     )
     expect(errors.nonEmpty)
 
-  pureTest("CursorValueCodec[Option[Long]] is not derived (compile error)"):
-    val errors = typeCheckErrors("summon[folio.CursorValueCodec[Option[Long]]]")
+  pureTest("FieldValueCodec[Option[Long]] is not derived (compile error)"):
+    val errors = typeCheckErrors("summon[folio.FieldValueCodec[Option[Long]]]")
     expect(errors.nonEmpty)

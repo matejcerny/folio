@@ -1,178 +1,34 @@
-/*
- * Copyright (c) 2026 Matej Cerny
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 package folio.it
-
-import java.time.{ OffsetDateTime, ZoneOffset }
-import java.time.temporal.ChronoUnit
 
 import cats.effect.{ IO, Ref, Resource }
 import cats.syntax.foldable.*
-import skunk.{ AppliedFragment, Codec, Command, Session, Void }
-import skunk.codec.all.{ int8, text, timestamptz }
-import skunk.implicits.*
+import skunk.Session
 
 import folio.*
 import folio.skunk.Pagination
 
-/** Deterministic Postgres integration tests (folio-skunk Phase 3).
+/** Deterministic Postgres integration tests for unfiltered pagination (folio-skunk Phase 3).
   *
   * Each test owns its dataset: it truncates `rows`, inserts a fixed, known set, then walks folio's pagination forward
   * to the end and backward to the start, asserting each page's exact row contents against hand-written expected
-  * sequences. These run against a real PostgreSQL (`docker compose up -d postgres`) so that real `bigint`/`timestamptz`
-  * ordering — including the `last_seen IS NULL` boundary — is exercised end to end.
+  * sequences. The schema, row model, and walk helpers live in [[Rows]] and [[RowsSuite]]; [[FilteredIntegrationSuite]]
+  * covers the same ground with filters applied.
   *
   * The headline case is [[B]]: backward traversal across the `last_seen IS NULL` boundary. If it passes, folio's keyset
   * SQL algorithm is confirmed against real Postgres ordering.
   */
-object IntegrationSuite extends weaver.IOSuite:
-
-  // === Fixtures: mirror the `rows` table (it/sql/init.sql) ===
-
-  final case class Row(
-      id: Long,
-      name: String,
-      createdAt: OffsetDateTime,
-      description: String,
-      lastSeen: Option[OffsetDateTime],
-      payload: String // decoded into the row, invisible to folio
-  )
-
-  enum RowField derives FieldSchema.SnakeCase:
-    case Id, Name, CreatedAt, Description, LastSeen // deliberately NO Payload case
-  // SnakeCase => id, name, created_at, description, last_seen — matches those columns.
-
-  // LastSeen is registered via the `T => Option[V]` overload, marking it absentable. Description is deliberately not
-  // registered, so ordering by it forces the offset branch (case D).
-  given KeysetField[RowField, Row] =
-    KeysetField
-      .uniqueBy(RowField.Id, (row: Row) => row.id)
-      .withField(RowField.Name, _.name)
-      .withField(RowField.CreatedAt, _.createdAt)
-      .withField(RowField.LastSeen, _.lastSeen)
-
-  // Whole-second UTC timestamps so `timestamptz` round-trips losslessly and decoded rows equal the inserted literals.
-  private val base: OffsetDateTime = OffsetDateTime.of(2026, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
-  private def at(seconds: Long): OffsetDateTime = base.plusSeconds(seconds).truncatedTo(ChronoUnit.SECONDS)
+object IntegrationSuite extends RowsSuite:
 
   // Fixed 6-row dataset: distinct ids, distinct descriptions (total order for the offset case), last_seen mixed
-  // Some/None, payload distinct and folio-invisible.
-  private val row1 = Row(1, "alice", at(1), "d1", Some(at(10)), "p1")
-  private val row2 = Row(2, "bob", at(2), "d2", Some(at(20)), "p2")
-  private val row3 = Row(3, "carol", at(3), "d3", None, "p3")
-  private val row4 = Row(4, "dave", at(4), "d4", Some(at(30)), "p4")
-  private val row5 = Row(5, "erin", at(5), "d5", None, "p5")
-  private val row6 = Row(6, "frank", at(6), "d6", None, "p6")
+  // Some/None, payload distinct and folio-invisible. group_id is constant because these cases never filter — the
+  // filtered suite is where it carries repeated values.
+  private val row1 = Row(1, "alice", at(1), "d1", Some(at(10)), 100, "p1")
+  private val row2 = Row(2, "bob", at(2), "d2", Some(at(20)), 100, "p2")
+  private val row3 = Row(3, "carol", at(3), "d3", None, 100, "p3")
+  private val row4 = Row(4, "dave", at(4), "d4", Some(at(30)), 100, "p4")
+  private val row5 = Row(5, "erin", at(5), "d5", None, 100, "p5")
+  private val row6 = Row(6, "frank", at(6), "d6", None, 100, "p6")
   private val dataset: List[Row] = List(row1, row2, row3, row4, row5, row6)
-
-  // === SELECT + codec ===
-
-  // Projection order (id, name, created_at, description, last_seen, payload) matches Row's field order. The first five
-  // match their FieldSchema names (the column-name contract); `payload` is an extra projected column folio does
-  // not know about. One Codec[Row] serves both the SELECT decoder and the INSERT encoder.
-  private val rowCodec: Codec[Row] =
-    (int8 *: text *: timestamptz *: text *: timestamptz.opt *: text).to[Row]
-
-  private val select: AppliedFragment =
-    sql"SELECT id, name, created_at, description, last_seen, payload FROM rows".apply(Void)
-
-  private val insert: Command[Row] =
-    sql"INSERT INTO rows (id, name, created_at, description, last_seen, payload) VALUES ($rowCodec)".command
-
-  // === Session resource (Skunk speaks the PG wire protocol — no JDBC) ===
-
-  type Res = Session[IO]
-
-  // weaver runs a suite's test cases concurrently by default (MutableFSuite.maxParallelism = 10000); a single Skunk
-  // `Session` is not safe for concurrent use, so serialize the cases onto it. (`Test/parallelExecution := false` only
-  // controls sbt-level cross-suite parallelism, not weaver's intra-suite concurrency.)
-  override def maxParallelism: Int = 1
-
-  override def sharedResource: Resource[IO, Session[IO]] =
-    import org.typelevel.otel4s.metrics.Meter.Implicits.noop
-    import org.typelevel.otel4s.trace.Tracer.Implicits.noop
-    Session
-      .Builder[IO]
-      .withHost("localhost")
-      .withPort(5432)
-      .withUserAndPassword("folio", "folio")
-      .withDatabase("folio")
-      .single
-
-  // === Per-test DB lifecycle ===
-
-  private def reset(session: Session[IO], rows: List[Row]): IO[Unit] =
-    session.execute(sql"TRUNCATE TABLE rows".command).void *>
-      session.prepare(insert).flatMap(prepared => rows.traverse_(prepared.execute))
-
-  // === Walk helpers (drive by folio's own cursors — no hardcoded cursor strings) ===
-
-  private def page(session: Session[IO], query: Query[RowField]): IO[Page[Row]] =
-    Pagination.withPagination[IO, Row, RowField](query, session, rowCodec)(select)
-
-  /** Follow `nextCursor` to the end; returns every page in visit order. Terminates when a page has no next cursor (a
-    * finite dataset always reaches a short final fetch).
-    */
-  private def walkForward(session: Session[IO], query: Query[RowField]): IO[List[Page[Row]]] =
-    page(session, query).flatMap: current =>
-      current.nextCursor match
-        case Some(cursor) => walkForward(session, query.copy(cursor = Some(cursor))).map(current :: _)
-        case None         => IO.pure(List(current))
-
-  /** From the final page, follow `previousCursor` to the start; returns each fetched page in visit order (newest to
-    * oldest, the final page itself excluded).
-    *
-    * Termination: both strategies now stop naturally when the first page reports no previous cursor. Keyset's reverse
-    * seek past the start returns fewer than `limit + 1` rows; offset's previous availability is positional (offset >
-    * 0), so at offset 0 the first page emits no previous cursor rather than clamping back to itself and self-looping.
-    */
-  private def walkBackward(
-      session: Session[IO],
-      lastPage: Page[Row],
-      query: Query[RowField]
-  ): IO[List[Page[Row]]] =
-    lastPage.previousCursor match
-      case Some(cursor) =>
-        page(session, query.copy(cursor = Some(cursor)))
-          .flatMap(previousPage => walkBackward(session, previousPage, query).map(previousPage :: _))
-      case None => IO.pure(Nil)
-
-  /** Run the full forward + backward walk and assert the page data and the end-cursor presence/absence. */
-  private def checkWalk(
-      session: Session[IO],
-      rows: List[Row],
-      query: Query[RowField],
-      expectedForwardData: List[List[Row]],
-      expectedBackwardData: List[List[Row]]
-  ): IO[weaver.Expectations] =
-    for
-      _ <- reset(session, rows)
-      forwardPages <- walkForward(session, query)
-      backwardPages <- walkBackward(session, forwardPages.last, query)
-    yield List(
-      expect.same(expectedForwardData, forwardPages.map(_.data.toList)),
-      expect.same(None, forwardPages.head.previousCursor), // first page: no previous
-      expect.same(None, forwardPages.last.nextCursor), // last page: no next
-      expect.same(expectedBackwardData, backwardPages.map(_.data.toList))
-    ).combineAll
 
   // === Cases ===
 
@@ -288,7 +144,7 @@ object IntegrationSuite extends weaver.IOSuite:
       Set.empty,
       Vector(RowField.Id.ascending),
       10.items,
-      Position.Keyset(List(KeysetValue.LongV(1))),
+      Position.Keyset(List(FieldValue.LongV(1).present)),
       Direction.Forward
     )
     Pagination

@@ -26,8 +26,8 @@ Two API-shape questions arise:
      predicate builder `zip`s fields against values, so a mismatch silently
      drops or ignores rungs.
 
-An earlier design (§7 of the throwaway design doc) had `buildSql` return a bare
-`AppliedFragment` and take two implicit-style arguments.
+An earlier design had `buildSql` return a bare `AppliedFragment` and take two
+implicit-style arguments.
 
 ## Decision
 
@@ -58,15 +58,15 @@ error channel.
   never as wrong SQL.
 - An empty anchor (`Position.Keyset(Nil)`, the first-page request) is valid and
   renders without a `WHERE` clause.
-- This deviates from the design doc's bare-`AppliedFragment`, two-argument
-  shape. The phase-2 `withPagination` wiring adopts this new signature.
+- This deviates from the earlier bare-`AppliedFragment`, two-argument shape;
+  the `withPagination` wiring adopts this signature.
 
 ## Alternatives rejected
 
 - **Summon `KeysetField` implicitly.** Rejected: ambiguous when multiple row
   models share a `FIELD` enum. The explicit argument is unambiguous and
   consistent with `Page.withPagination`.
-- **Return a bare `AppliedFragment`** (design §7) and treat inconsistent inputs
-  as best-effort. Rejected: a `None`/`Keyset` mix or an arity mismatch would
+- **Return a bare `AppliedFragment`** and treat inconsistent inputs as
+  best-effort. Rejected: a `None`/`Keyset` mix or an arity mismatch would
   emit truncated SQL that fails — or worse, silently mis-paginates — at the
   database rather than at composition time.

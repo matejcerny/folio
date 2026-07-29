@@ -4,17 +4,19 @@ import folio.*
 
 import java.time.OffsetDateTime
 
-case class Message(id: Long, enqueuedAt: OffsetDateTime, lastReadAt: Option[OffsetDateTime])
+case class Message(id: Long, topic: String, enqueuedAt: OffsetDateTime, lastReadAt: Option[OffsetDateTime])
 
 // Step 1: Define the fields your entity can be ordered/filtered by +
 // derive schema which maps enum cases to column name strings used in cursors.
 enum MessageField derives FieldSchema.SnakeCase:
-  case Id, EnqueuedAt, LastReadAt
+  case Id, Topic, EnqueuedAt, LastReadAt
 
 // Step 2: Designate the unique field and how to extract it from a row — opts in to keyset pagination.
 // Register additional order fields via `.withField(...)` so keyset works on those columns too;
-// `T => Option[V]` marks the field as absentable, so missing values encode as `KeysetValue.Absent`
+// `T => Option[V]` marks the field as absentable, so missing values encode as `AnchorValue.Absent`
 // and order after present values regardless of direction.
+// Topic is deliberately not registered: it is only ever filtered on, and filtering needs no keyset registration.
+// Registration is about *ordering* — it is what lets keyset seek on a field instead of falling back to offset.
 given KeysetField[MessageField, Message] =
   KeysetField
     .uniqueBy(MessageField.Id, (message: Message) => message.id)
@@ -23,9 +25,19 @@ given KeysetField[MessageField, Message] =
 
 @main def runKeysetExample(): Unit =
   val rows = Seq(
-    Message(1, OffsetDateTime.parse("2024-01-01T00:00:00Z"), Some(OffsetDateTime.parse("2024-01-02T00:00:00Z"))),
-    Message(2, OffsetDateTime.parse("2024-01-03T00:00:00Z"), None),
-    Message(3, OffsetDateTime.parse("2024-01-05T00:00:00Z"), Some(OffsetDateTime.parse("2024-01-06T00:00:00Z")))
+    Message(
+      1,
+      "alerts",
+      OffsetDateTime.parse("2024-01-01T00:00:00Z"),
+      Some(OffsetDateTime.parse("2024-01-02T00:00:00Z"))
+    ),
+    Message(2, "digest", OffsetDateTime.parse("2024-01-03T00:00:00Z"), None),
+    Message(
+      3,
+      "alerts",
+      OffsetDateTime.parse("2024-01-05T00:00:00Z"),
+      Some(OffsetDateTime.parse("2024-01-06T00:00:00Z"))
+    )
   )
 
   val query = Query(limit = 2.items).orderBy(MessageField.LastReadAt.descending)

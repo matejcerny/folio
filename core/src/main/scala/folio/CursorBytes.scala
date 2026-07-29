@@ -1,24 +1,3 @@
-/*
- * Copyright (c) 2026 Matej Cerny
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 package folio
 
 import folio.FolioError.*
@@ -55,6 +34,22 @@ private[folio] object CursorBytes:
   type EncodedBytes = Vector[Byte]
 
   private val empty: EncodedBytes = Vector.empty
+
+  /** Type tags for [[FieldValue]] variants plus [[AnchorValue.Absent]]. Cursor anchor slots and the canonical filter
+    * fingerprint share one tag space, so a value encodes to the same bytes whichever of the two carries it.
+    */
+  val tagIntV: Byte = 0x01
+  val tagLongV: Byte = 0x02
+  val tagStringV: Byte = 0x03
+  val tagTimestampV: Byte = 0x04
+  val tagAbsent: Byte = 0x05
+
+  /** Self-delimiting encoding of a present field value: type tag followed by the variant's payload. */
+  def fieldValueBytes(value: FieldValue): EncodedBytes = value match
+    case FieldValue.IntV(intValue)             => byte(tagIntV) ++ intBytes(intValue)
+    case FieldValue.LongV(longValue)           => byte(tagLongV) ++ longBytes(longValue)
+    case FieldValue.StringV(stringValue)       => byte(tagStringV) ++ stringBytes(stringValue)
+    case FieldValue.TimestampV(timestampValue) => byte(tagTimestampV) ++ timestampBytes(timestampValue)
 
   def byte(value: Byte): EncodedBytes = Vector(value)
 

@@ -1,24 +1,3 @@
-/*
- * Copyright (c) 2026 Matej Cerny
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 package folio.skunk
 
 import scala.compiletime.summonFrom
@@ -99,23 +78,25 @@ object Pagination:
     * The user's `select` is wrapped as an opaque subquery (ADR 0004):
     * {{{
     *   SELECT * FROM ( <select> ) AS usersql
-    *   WHERE <keyset predicate>
+    *   WHERE <filters> AND ( <keyset predicate> )
     *   ORDER BY <order fields>
     *   LIMIT <resolved limit>
     * }}}
     *
-    * The subquery must project every order and keyset column under its `FieldSchema` name.
+    * The subquery must project every filter, order, and keyset column under its `FieldSchema` name.
     *
     * Values are bound through `AppliedFragment`; the SQL shape can still differ for the first page and `Absent`
     * anchors. Pass the same `KeysetField` used to resolve the query, or `None` for offset-only pagination. A missing
     * keyset field or mismatched anchor arity returns `Left` (ADR 0005).
     *
-    * `resolved.filters` is intentionally not rendered; apply filtering inside `select`. Filters still participate in
-    * the cursor fingerprint (ADR 0006). Offset queries append the unique field when available; without one, the caller
-    * must supply a total order (ADR 0007).
+    * `resolved.filters` is rendered as one conjunction of parameterized equality predicates that applies before
+    * pagination, on both the keyset and the offset branch, and also feeds the cursor fingerprint so a changed filter
+    * set invalidates outstanding cursors. Bound parameters appear in the order inner `SELECT`, filters, keyset or
+    * offset, fetch limit. Offset queries append the unique field when available; without one, the caller must supply a
+    * total order (ADR 0007).
     *
-    * Keyset values use fixed Skunk codecs (`int4`, `int8`, `text`, `timestamptz`). UUID, numeric/BigDecimal, and plain
-    * timestamp fields require a compatible cast in `select`.
+    * Filter and keyset values use fixed Skunk codecs (`int4`, `int8`, `text`, `timestamptz`). UUID, numeric/BigDecimal,
+    * and plain timestamp fields require a compatible cast in `select`.
     */
   def buildSql[FIELD: FieldSchema](
       resolved: ResolvedQuery[FIELD],
@@ -149,20 +130,12 @@ object Pagination:
     // Empty is the first-page anchor; otherwise exact arity prevents zip from truncating the predicate.
     Either.cond(
       keyset.values.isEmpty || keyset.values.size == cursorFields.size, {
-        val whereClause =
-          if keyset.values.isEmpty then AppliedFragment.empty
-          else
-            raw(" WHERE ") |+| keysetPredicate(
-              resolved.ordering,
-              resolved.direction,
-              cursorFields,
-              keyset.values,
-              absentableFields
-            )
+        val seek = Option.when(keyset.values.nonEmpty):
+          keysetPredicate(resolved.ordering, resolved.direction, cursorFields, keyset.values, absentableFields)
 
         val orderByClause = raw(" ORDER BY ") |+| orderBy(resolved.ordering, cursorFields, resolved.direction)
 
-        wrap(select) |+| whereClause |+| orderByClause |+| limitClause(resolved)
+        wrap(select) |+| where(filterPredicate(resolved.filters), seek) |+| orderByClause |+| limitClause(resolved)
       },
       FolioError.InvalidQuery(
         s"Keyset anchor arity mismatch: ${cursorFields.size} cursor field(s) but ${keyset.values.size} anchor value(s)"
@@ -184,7 +157,8 @@ object Pagination:
       if orderFields.isEmpty then AppliedFragment.empty
       else raw(" ORDER BY ") |+| orderingClause
 
-    wrap(select) |+| orderByClause |+| raw(" OFFSET ") |+| sql"$int8".apply(offset.offset) |+| limitClause(resolved)
+    wrap(select) |+| where(filterPredicate(resolved.filters), None) |+|
+      orderByClause |+| raw(" OFFSET ") |+| sql"$int8".apply(offset.offset) |+| limitClause(resolved)
 
   private def wrap(select: AppliedFragment): AppliedFragment =
     raw("SELECT * FROM (") |+| select |+| raw(") AS usersql")
@@ -192,6 +166,44 @@ object Pagination:
   private def limitClause[FIELD](resolved: ResolvedQuery[FIELD]): AppliedFragment =
     // fetchLimit is the page size plus one, so withPagination can detect a further page.
     raw(" LIMIT ") |+| sql"$int4".apply(resolved.fetchLimit.value)
+
+  /** The single outer `WHERE`, or nothing when the query has neither filters nor an anchor.
+    *
+    * Filters come first so bound parameters stay in the order [[buildSql]] documents. The keyset seek is a disjunction,
+    * so it is parenthesized before being ANDed with the filters — `AND` binds tighter than `OR`, so without the
+    * parentheses the trailing rungs of the seek would escape the filters and leak rows. A query with no filters emits
+    * the bare seek, which keeps unfiltered SQL byte-identical to a folio without filtering.
+    */
+  private def where(filters: Option[AppliedFragment], seek: Option[AppliedFragment]): AppliedFragment =
+    val conjuncts = (filters, seek) match
+      case (Some(filterConjunction), Some(keysetSeek)) => List(filterConjunction, parens(keysetSeek))
+      case (filterConjunction, keysetSeek)             => filterConjunction.toList ++ keysetSeek.toList
+
+    if conjuncts.isEmpty then AppliedFragment.empty
+    else raw(" WHERE ") |+| joinFragments(conjuncts, raw(" AND "))
+
+  // === Filters ===
+
+  /** Conjunction of a query's exact-match filters, or `None` when the query has none.
+    *
+    * Filters render in [[folio.CanonicalFilters]] order, so the SQL text of a given filter set does not depend on the
+    * iteration order of the `Set` that carried it: the prepared-statement cache keeps working and the text is worth
+    * asserting on. Each value is bound through its fixed Skunk codec (`int4`, `int8`, `text`, `timestamptz`) and
+    * compared against the column at its own type — no value is ever interpolated into the SQL and no column is cast.
+    *
+    * Two filters on the same field are two predicates, ANDed like any others, because [[folio.FilterBy.ExactMatch]]
+    * identity is `(field, encoded value)`.
+    */
+  private[skunk] def filterPredicate[FIELD: FieldSchema](filters: Set[FilterBy[FIELD]]): Option[AppliedFragment] =
+    val predicates = CanonicalFilters.sorted(filters).map(filterComparison).toList
+    Option.when(predicates.nonEmpty)(joinFragments(predicates, raw(" AND ")))
+
+  /** The operator a single filter renders with. Matching on the predicate rather than assuming `=` keeps the next
+    * `FilterBy` case an exhaustivity error here instead of a silent mis-render.
+    */
+  private def filterComparison[FIELD: FieldSchema](filter: FilterBy[FIELD]): AppliedFragment = filter match
+    case _: FilterBy.ExactMatch[?, ?] =>
+      columnReference(filter.field) |+| raw(" = ") |+| bindFieldValue(filter.encodedValue)
 
   // === Keyset predicate ===
 
@@ -202,7 +214,7 @@ object Pagination:
       ordering: Vector[OrderBy[FIELD]],
       direction: Direction,
       cursorFields: List[FIELD],
-      values: List[KeysetValue],
+      values: List[AnchorValue],
       absentableFields: Set[FIELD]
   ): AppliedFragment =
     val fieldsWithValues = cursorFields.zip(values)
@@ -220,7 +232,7 @@ object Pagination:
 
     joinFragments(disjuncts, raw(" OR "))
 
-  private def equalityRung(column: AppliedFragment, value: KeysetValue): AppliedFragment =
+  private def equalityRung(column: AppliedFragment, value: AnchorValue): AppliedFragment =
     column |+| raw(" IS NOT DISTINCT FROM ") |+| bindValue(value)
 
   /** Direction-aware strict seek. Absentable values sort last forward and first backward; an `Absent` anchor becomes
@@ -228,12 +240,12 @@ object Pagination:
     */
   private def strictStep(
       column: AppliedFragment,
-      value: KeysetValue,
+      value: AnchorValue,
       order: Order,
       direction: Direction,
       isAbsentable: Boolean
   ): AppliedFragment =
-    val absent = value == KeysetValue.Absent
+    val absent = value == AnchorValue.Absent
     val inner =
       if isAbsentable then
         (order, direction, absent) match
@@ -304,13 +316,20 @@ object Pagination:
   private def quoteIdentifier(name: String): String =
     "\"" + name.replace("\"", "\"\"") + "\""
 
-  private def bindValue(value: KeysetValue): AppliedFragment =
+  private def bindValue(value: AnchorValue): AppliedFragment =
     value match
-      case KeysetValue.IntV(intValue)             => sql"$int4".apply(intValue)
-      case KeysetValue.LongV(longValue)           => sql"$int8".apply(longValue)
-      case KeysetValue.StringV(stringValue)       => sql"$text".apply(stringValue)
-      case KeysetValue.TimestampV(timestampValue) => sql"$timestamptz".apply(timestampValue)
-      case KeysetValue.Absent                     => raw("NULL")
+      case AnchorValue.Present(fieldValue) => bindFieldValue(fieldValue)
+      case AnchorValue.Absent              => raw("NULL")
+
+  /** Binds a value at its own PostgreSQL type using the fixed codec mapping documented on [[buildSql]]. Shared by
+    * keyset anchors and filter values so both bind a given [[folio.FieldValue]] the same way.
+    */
+  private def bindFieldValue(value: FieldValue): AppliedFragment =
+    value match
+      case FieldValue.IntV(intValue)             => sql"$int4".apply(intValue)
+      case FieldValue.LongV(longValue)           => sql"$int8".apply(longValue)
+      case FieldValue.StringV(stringValue)       => sql"$text".apply(stringValue)
+      case FieldValue.TimestampV(timestampValue) => sql"$timestamptz".apply(timestampValue)
 
   private def parens(fragment: AppliedFragment): AppliedFragment =
     raw("(") |+| fragment |+| raw(")")

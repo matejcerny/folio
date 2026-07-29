@@ -1,34 +1,79 @@
-/*
- * Copyright (c) 2026 Matej Cerny
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 package folio
 
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
+
+import scala.compiletime.testing.typeCheckErrors
+
+import cats.syntax.foldable.*
 import weaver.SimpleIOSuite
 
 object FilterBySuite extends SimpleIOSuite:
 
-  pureTest("ExactMatch stores field correctly"):
+  pureTest("ExactMatch keeps field and raw value"):
     val filter = FilterBy.ExactMatch(TestField.Name, "alice")
-    expect.same(TestField.Name, filter.field)
+    List(
+      expect.same(TestField.Name, filter.field),
+      expect.same("alice", filter.value)
+    ).combineAll
 
-  pureTest("ExactMatch stores value correctly"):
+  pureTest("ExactMatch encodes each supported value type"):
+    val timestamp = OffsetDateTime.of(2024, 1, 5, 12, 34, 56, 0, ZoneOffset.UTC)
+    List(
+      expect.same(FieldValue.StringV("alice"), FilterBy.ExactMatch(TestField.Name, "alice").encodedValue),
+      expect.same(FieldValue.IntV(42), FilterBy.ExactMatch(TestField.Id, 42).encodedValue),
+      expect.same(FieldValue.LongV(42L), FilterBy.ExactMatch(TestField.Id, 42L).encodedValue),
+      expect.same(
+        FieldValue.TimestampV(timestamp),
+        FilterBy.ExactMatch(TestField.CreatedAt, timestamp).encodedValue
+      )
+    ).combineAll
+
+  pureTest("same numeric payload encodes differently across types"):
+    // Mirrors FieldValueSuite's cross-variant inequality: IntV(1) and LongV(1) are not equal.
+    expect(
+      FilterBy.ExactMatch(TestField.Id, 1).encodedValue !=
+        FilterBy.ExactMatch(TestField.Id, 1L).encodedValue
+    )
+
+  pureTest("conjunctive Set keeps distinct values and collapses identical filters"):
+    val alice = FilterBy.ExactMatch(TestField.Name, "alice")
+    val bob = FilterBy.ExactMatch(TestField.Name, "bob")
+    List(
+      expect.same(2, Set(alice, bob).size),
+      expect.same(1, Set(alice, alice).size)
+    ).combineAll
+
+  pureTest("equality keys on the encoded value, not the raw value"):
+    // Raw 1 and 1L are `==` under boxed numeric equality; the encoded variants are not, and the
+    // encoded variant is what gets rendered and fingerprinted, so both predicates survive the Set.
+    val asInt = FilterBy.ExactMatch(TestField.Id, 1)
+    val asLong = FilterBy.ExactMatch(TestField.Id, 1L)
+    List(
+      expect(asInt != asLong),
+      expect(asInt.hashCode != asLong.hashCode),
+      expect.same(2, Set[FilterBy[TestField]](asInt, asLong).size)
+    ).combineAll
+
+  pureTest("equality ignores the value type when the encoding matches"):
     val filter = FilterBy.ExactMatch(TestField.Name, "alice")
-    expect.same("alice", filter.value)
+    List(
+      expect.same(FilterBy.ExactMatch(TestField.Name, "alice"), filter),
+      expect(FilterBy.ExactMatch(TestField.Description, "alice") != filter)
+    ).combineAll
+
+  pureTest("ExactMatch does not require FieldSchema"):
+    // AliasField has no FieldSchema given outside one scoped CursorSuite block.
+    val filter = FilterBy.ExactMatch(AliasField.Other, "x")
+    List(
+      expect.same(AliasField.Other, filter.field),
+      expect.same("x", filter.value),
+      expect.same(FieldValue.StringV("x"), filter.encodedValue)
+    ).combineAll
+
+  pureTest("unsupported value type does not compile"):
+    val errors = typeCheckErrors("folio.FilterBy.ExactMatch(folio.TestField.Name, true)")
+    List(
+      expect(errors.nonEmpty),
+      expect(errors.exists(_.message.contains("FieldValueCodec")))
+    ).combineAll

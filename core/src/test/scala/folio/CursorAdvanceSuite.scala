@@ -1,24 +1,3 @@
-/*
- * Copyright (c) 2026 Matej Cerny
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 package folio
 
 import weaver.SimpleIOSuite
@@ -31,13 +10,13 @@ object CursorAdvanceSuite extends SimpleIOSuite:
 
   pureTest("offsetOnly.next passes Keyset through unchanged (defensive branch)"):
     val advance = CursorAdvance.offsetOnly[TestField, Row]
-    val keyset = Position.Keyset(List(KeysetValue.LongV(7L)))
+    val keyset = Position.Keyset(List(FieldValue.LongV(7L).present))
 
     expect.same(keyset, advance.next(keyset, Vector.empty, Seq.empty, limit))
 
   pureTest("offsetOnly.previous passes Keyset through unchanged (defensive branch)"):
     val advance = CursorAdvance.offsetOnly[TestField, Row]
-    val keyset = Position.Keyset(List(KeysetValue.LongV(7L)))
+    val keyset = Position.Keyset(List(FieldValue.LongV(7L).present))
 
     expect.same(keyset, advance.previous(keyset, Vector.empty, Seq.empty, limit))
 
@@ -53,7 +32,7 @@ object CursorAdvanceSuite extends SimpleIOSuite:
     val ordering = Vector(TestField.Name.ascending)
 
     expect.same(
-      Position.Keyset(List(KeysetValue.LongV(99L), KeysetValue.LongV(99L))),
+      Position.Keyset(List(FieldValue.LongV(99L).present, FieldValue.LongV(99L).present)),
       advance.next(Position.Keyset(Nil), ordering, Seq(row), limit)
     )
 
@@ -64,11 +43,11 @@ object CursorAdvanceSuite extends SimpleIOSuite:
     val ordering = Vector(TestField.Name.ascending)
 
     expect.same(
-      Position.Keyset(List(KeysetValue.LongV(7L), KeysetValue.LongV(7L))),
+      Position.Keyset(List(FieldValue.LongV(7L).present, FieldValue.LongV(7L).present)),
       advance.previous(Position.Keyset(Nil), ordering, Seq(row), limit)
     )
 
-  // --- absentable-field extractor produces KeysetValue.Absent on None ---
+  // --- absentable-field extractor produces AnchorValue.Absent on None ---
 
   pureTest("keysetAware.next emits Absent when the boundary row's absentable field is None"):
     val keysetField = KeysetField
@@ -79,7 +58,7 @@ object CursorAdvanceSuite extends SimpleIOSuite:
     val ordering = Vector(TestField.LastSeen.ascending)
 
     expect.same(
-      Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(8L))),
+      Position.Keyset(List(AnchorValue.Absent, FieldValue.LongV(8L).present)),
       advance.next(Position.Keyset(Nil), ordering, Seq(row), limit)
     )
 
@@ -92,7 +71,7 @@ object CursorAdvanceSuite extends SimpleIOSuite:
     val ordering = Vector(TestField.LastSeen.ascending)
 
     expect.same(
-      Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5L))),
+      Position.Keyset(List(AnchorValue.Absent, FieldValue.LongV(5L).present)),
       advance.previous(Position.Keyset(Nil), ordering, Seq(row), limit)
     )
 
@@ -105,6 +84,6 @@ object CursorAdvanceSuite extends SimpleIOSuite:
     val ordering = Vector(TestField.LastSeen.ascending)
 
     expect.same(
-      Position.Keyset(List(KeysetValue.StringV("2024-02-03"), KeysetValue.LongV(2L))),
+      Position.Keyset(List(FieldValue.StringV("2024-02-03").present, FieldValue.LongV(2L).present)),
       advance.next(Position.Keyset(Nil), ordering, Seq(row), limit)
     )

@@ -2,7 +2,14 @@
 
 ## Status
 
-Accepted — 2026-06-12.
+Superseded by [ADR 0009](0009-typed-exact-match-filters.md) — 2026-07-30.
+Accepted 2026-06-12.
+
+folio-skunk now renders `Query.filters` as parameterized equality predicates. The
+forward-compat trap recorded below is no longer hypothetical: the ADR 0004
+projection contract has tightened, and cursors minted for filtered queries before
+ADR 0009 decode as `StaleCursor`. Everything past this point is the superseded
+decision, kept for the record.
 
 ## Context
 

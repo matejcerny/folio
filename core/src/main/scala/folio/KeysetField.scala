@@ -1,40 +1,17 @@
-/*
- * Copyright (c) 2026 Matej Cerny
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 package folio
 
 import scala.annotation.{ implicitNotFound, targetName }
-
-import folio.FolioError.CursorDecodingError
 
 /** Enables keyset pagination by both designating the unique field within `FIELD` and extracting its value from a row of
   * type `T`. Provide one alongside your [[FieldSchema]] to opt into keyset; omit it to fall back to offset-only
   * pagination.
   *
   * The unique-field's value type is captured as a type member [[ID]] and inferred from the row extractor at
-  * construction. A [[CursorValueCodec]] for [[ID]] is required so the cursor can serialize the keyset anchor.
+  * construction. A [[FieldValueCodec]] for [[ID]] is required so the cursor can serialize the keyset anchor.
   *
   * Use [[withField]] to register additional non-unique order fields for keyset pagination. Each registered field has a
-  * typed extractor and a [[CursorValueCodec]] so its row value can be encoded into the cursor anchor. The
-  * `T => Option[V]` overload marks the field as absentable: a missing row value encodes as [[KeysetValue.Absent]] and
+  * typed extractor and a [[FieldValueCodec]] so its row value can be encoded into the cursor anchor. The
+  * `T => Option[V]` overload marks the field as absentable: a missing row value encodes as [[AnchorValue.Absent]] and
   * the decoder accepts the same in that slot.
   */
 @implicitNotFound(
@@ -47,26 +24,26 @@ trait KeysetField[FIELD, T]:
   def absentableFields: Set[FIELD]
 
   @targetName("withRequiredField")
-  def withField[V](field: FIELD, extract: T => V)(using CursorValueCodec[V]): KeysetField.Aux[FIELD, T, ID]
+  def withField[V](field: FIELD, extract: T => V)(using FieldValueCodec[V]): KeysetField.Aux[FIELD, T, ID]
 
   @targetName("withAbsentableField")
-  def withField[V](field: FIELD, extract: T => Option[V])(using CursorValueCodec[V]): KeysetField.Aux[FIELD, T, ID]
+  def withField[V](field: FIELD, extract: T => Option[V])(using FieldValueCodec[V]): KeysetField.Aux[FIELD, T, ID]
 
-  private[folio] def codec: CursorValueCodec[ID]
+  private[folio] def codec: FieldValueCodec[ID]
   private[folio] def fields: Map[FIELD, FieldExtractor[T]]
 
 object KeysetField:
   type Aux[FIELD, T, ID0] = KeysetField[FIELD, T] { type ID = ID0 }
 
   def uniqueBy[FIELD, T, ID0](idField: FIELD, extract: T => ID0)(using
-      idCodec: CursorValueCodec[ID0]
+      idCodec: FieldValueCodec[ID0]
   ): Aux[FIELD, T, ID0] =
     make(idField, extract, idCodec, Map(idField -> FieldExtractor.required(extract)(using idCodec)))
 
   private def make[FIELD, T, ID0](
       idField: FIELD,
       extractId: T => ID0,
-      idCodec: CursorValueCodec[ID0],
+      idCodec: FieldValueCodec[ID0],
       registeredFields: Map[FIELD, FieldExtractor[T]]
   ): Aux[FIELD, T, ID0] =
     new KeysetField[FIELD, T]:
@@ -80,44 +57,44 @@ object KeysetField:
           .toSet
 
       @targetName("withRequiredField")
-      def withField[V](field: FIELD, extract: T => V)(using fieldCodec: CursorValueCodec[V]): Aux[FIELD, T, ID] =
+      def withField[V](field: FIELD, extract: T => V)(using fieldCodec: FieldValueCodec[V]): Aux[FIELD, T, ID] =
         make(idField, extractId, idCodec, registeredFields.updated(field, FieldExtractor.required(extract)))
 
       @targetName("withAbsentableField")
       def withField[V](field: FIELD, extract: T => Option[V])(using
-          fieldCodec: CursorValueCodec[V]
+          fieldCodec: FieldValueCodec[V]
       ): Aux[FIELD, T, ID] =
         make(idField, extractId, idCodec, registeredFields.updated(field, FieldExtractor.absentable(extract)))
 
-      private[folio] def codec: CursorValueCodec[ID] = idCodec
+      private[folio] def codec: FieldValueCodec[ID] = idCodec
       private[folio] def fields: Map[FIELD, FieldExtractor[T]] = registeredFields
 
 private[folio] trait FieldExtractor[T]:
-  def encodedFromRow(row: T): KeysetValue
+  def encodedFromRow(row: T): AnchorValue
   def isAbsentable: Boolean
 
-  /** Check that a decoded anchor slot carries a [[KeysetValue]] variant this field's codec can consume. An `Absent`
-    * value is always accepted here (absentability is validated separately); a concrete variant the codec does not
-    * recognise is rejected, so a type-forged cursor fails as a [[CursorDecodingError]] rather than reaching the SQL
-    * driver as a mismatched bind.
+  /** Whether a decoded anchor slot carries a value this field's codec can consume. [[AnchorValue.Absent]] is always
+    * accepted here (absentability is validated separately); a [[FieldValue]] variant the codec does not recognise is
+    * rejected, so a type-forged cursor fails as a `CursorDecodingError` rather than reaching the SQL driver as a
+    * mismatched bind.
     */
-  def validateVariant(value: KeysetValue): Either[CursorDecodingError, Unit]
+  def acceptsVariant(value: AnchorValue): Boolean
 
 private[folio] object FieldExtractor:
-  def required[T, V](extractFn: T => V)(using codecForValue: CursorValueCodec[V]): FieldExtractor[T] =
+  def required[T, V](extractFn: T => V)(using codecForValue: FieldValueCodec[V]): FieldExtractor[T] =
     new FieldExtractor[T]:
-      def encodedFromRow(row: T): KeysetValue = codecForValue.toKeysetValue(extractFn(row))
+      def encodedFromRow(row: T): AnchorValue = codecForValue.toFieldValue(extractFn(row)).present
       def isAbsentable: Boolean = false
-      def validateVariant(value: KeysetValue): Either[CursorDecodingError, Unit] = variantOf(codecForValue, value)
+      def acceptsVariant(value: AnchorValue): Boolean = accepts(codecForValue, value)
 
-  def absentable[T, V](extractFn: T => Option[V])(using codecForValue: CursorValueCodec[V]): FieldExtractor[T] =
+  def absentable[T, V](extractFn: T => Option[V])(using codecForValue: FieldValueCodec[V]): FieldExtractor[T] =
     new FieldExtractor[T]:
-      def encodedFromRow(row: T): KeysetValue =
-        extractFn(row).map(codecForValue.toKeysetValue).getOrElse(KeysetValue.Absent)
+      def encodedFromRow(row: T): AnchorValue =
+        extractFn(row).map(codecForValue.toFieldValue(_).present).getOrElse(AnchorValue.Absent)
       def isAbsentable: Boolean = true
-      def validateVariant(value: KeysetValue): Either[CursorDecodingError, Unit] = variantOf(codecForValue, value)
+      def acceptsVariant(value: AnchorValue): Boolean = accepts(codecForValue, value)
 
-  private def variantOf[V](codec: CursorValueCodec[V], value: KeysetValue): Either[CursorDecodingError, Unit] =
+  private def accepts[V](codec: FieldValueCodec[V], value: AnchorValue): Boolean =
     value match
-      case KeysetValue.Absent => Right(())
-      case concrete           => codec.fromKeysetValue(concrete).map(_ => ())
+      case AnchorValue.Absent                 => true
+      case AnchorValue.Present(concreteValue) => codec.fromFieldValue(concreteValue).isDefined

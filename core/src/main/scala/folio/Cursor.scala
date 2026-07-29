@@ -1,24 +1,3 @@
-/*
- * Copyright (c) 2026 Matej Cerny
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 package folio
 
 import folio.CursorBytes.*
@@ -36,12 +15,6 @@ object Cursor:
   private val flagReservedMask: Byte = 0xfc.toByte
 
   extension (flags: Byte) private def isSet(mask: Byte): Boolean = (flags & mask) != 0
-
-  private val tagIntV: Byte = 0x01
-  private val tagLongV: Byte = 0x02
-  private val tagStringV: Byte = 0x03
-  private val tagTimestampV: Byte = 0x04
-  private val tagAbsent: Byte = 0x05
 
   private val maxKeysetArity: Int = 16
 
@@ -73,13 +46,13 @@ object Cursor:
     KeysetMetadata(
       Some(keysetField.field),
       keysetField.absentableFields,
-      keysetField.fields.view.mapValues(_.validateVariant).toMap
+      keysetField.fields.view.mapValues(_.acceptsVariant).toMap
     )
 
   private[folio] case class KeysetMetadata[FIELD](
       uniqueField: Option[FIELD],
       absentableFields: Set[FIELD],
-      variantValidators: Map[FIELD, KeysetValue => Either[CursorDecodingError, Unit]]
+      variantAcceptors: Map[FIELD, AnchorValue => Boolean]
   )
 
   private[folio] object KeysetMetadata:
@@ -160,14 +133,14 @@ object Cursor:
         expectedCursorFields(query, metadata)
           .zip(values)
           .collectFirst:
-            case (field, KeysetValue.Absent) if !metadata.absentableFields.contains(field) =>
+            case (field, AnchorValue.Absent) if !metadata.absentableFields.contains(field) =>
               CursorDecodingError.IncompatibleCursor(
                 s"anchor has Absent value in non-absentable field '${field.name}'"
               )
           .toLeft(())
       case _ => Right(())
 
-  /** Reject a decoded anchor whose slot carries a [[KeysetValue]] variant the field's registered codec cannot consume
+  /** Reject a decoded anchor whose slot carries a [[FieldValue]] variant the field's registered codec cannot consume
     * (e.g. a forged `StringV` in a `Long` id slot). The query fingerprint pins the query shape but not the anchor's
     * per-slot variants, so without this check a type-forged cursor would pass core validation and reach the SQL driver
     * as a mismatched bind, surfacing as a driver error through `F` instead of a [[CursorDecodingError]]. `Absent` slots
@@ -183,7 +156,7 @@ object Cursor:
         expectedCursorFields(query, metadata)
           .zip(values)
           .collectFirst:
-            case (field, value) if metadata.variantValidators.get(field).exists(_(value).isLeft) =>
+            case (field, value) if metadata.variantAcceptors.get(field).exists(!_(value)) =>
               CursorDecodingError.IncompatibleCursor(
                 s"anchor value for field '${field.name}' has incompatible type"
               )
@@ -204,33 +177,30 @@ object Cursor:
   private def decodeDirection(flags: Byte): Direction =
     if flags.isSet(flagDirection) then Direction.Backward else Direction.Forward
 
-  private def keysetValueBytes(value: KeysetValue): EncodedBytes = value match
-    case KeysetValue.IntV(intValue)             => byte(tagIntV) ++ intBytes(intValue)
-    case KeysetValue.LongV(longValue)           => byte(tagLongV) ++ longBytes(longValue)
-    case KeysetValue.StringV(stringValue)       => byte(tagStringV) ++ stringBytes(stringValue)
-    case KeysetValue.TimestampV(timestampValue) => byte(tagTimestampV) ++ timestampBytes(timestampValue)
-    case KeysetValue.Absent                     => byte(tagAbsent)
+  private def anchorValueBytes(value: AnchorValue): EncodedBytes = value match
+    case AnchorValue.Present(fieldValue) => fieldValueBytes(fieldValue)
+    case AnchorValue.Absent              => byte(tagAbsent)
 
-  private val readKeysetValue: Read[KeysetValue] =
+  private val readAnchorValue: Read[AnchorValue] =
     readByte.flatMap:
-      case `tagIntV`       => readInt.map(KeysetValue.IntV.apply)
-      case `tagLongV`      => readLong.map(KeysetValue.LongV.apply)
-      case `tagStringV`    => readString.map(KeysetValue.StringV.apply)
-      case `tagTimestampV` => readTimestamp.map(KeysetValue.TimestampV.apply)
-      case `tagAbsent`     => Right(KeysetValue.Absent: KeysetValue).liftRead
+      case `tagIntV`       => readInt.map(FieldValue.IntV(_).present)
+      case `tagLongV`      => readLong.map(FieldValue.LongV(_).present)
+      case `tagStringV`    => readString.map(FieldValue.StringV(_).present)
+      case `tagTimestampV` => readTimestamp.map(FieldValue.TimestampV(_).present)
+      case `tagAbsent`     => Right(AnchorValue.Absent: AnchorValue).liftRead
       case _               => Left(CursorDecodingError.MalformedCursor("unknown keyset value type")).liftRead
 
-  private def readKeysetValues(count: Int): Read[List[KeysetValue]] =
+  private def readAnchorValues(count: Int): Read[List[AnchorValue]] =
     List
-      .fill(count)(readKeysetValue)
-      .foldRight(Read.pure(List.empty[KeysetValue])): (readValue, readValues) =>
+      .fill(count)(readAnchorValue)
+      .foldRight(Read.pure(List.empty[AnchorValue])): (readValue, readValues) =>
         readValue.flatMap(value => readValues.map(value :: _))
 
   private def positionBytes(position: Position): EncodedBytes = position match
     case Position.Offset(offset)       => unsignedVarint(offset)
-    case Position.Keyset(keysetValues) =>
-      unsignedVarint(keysetValues.size.toLong) ++
-        keysetValues.flatMap(keysetValueBytes)
+    case Position.Keyset(anchorValues) =>
+      unsignedVarint(anchorValues.size.toLong) ++
+        anchorValues.flatMap(anchorValueBytes)
 
   private val readOffsetPosition: Read[Position] =
     readUnsignedVarint.flatMap: value =>
@@ -245,7 +215,7 @@ object Cursor:
           CursorDecodingError.MalformedCursor("keyset arity exceeds limit")
         )
         .liftRead
-        .flatMap(readKeysetValues(_).map(Position.Keyset.apply))
+        .flatMap(readAnchorValues(_).map(Position.Keyset.apply))
 
   private def orderingPart[FIELD: FieldSchema](ordering: Vector[OrderBy[FIELD]]): String =
     ordering.map(orderBy => s"${orderBy.field.name}:${orderPart(orderBy.order)}").mkString(",")
@@ -255,15 +225,10 @@ object Cursor:
       case Order.Ascending  => "A"
       case Order.Descending => "D"
 
-  private def singleFilterPart[FIELD: FieldSchema](filter: FilterBy[FIELD]): String =
-    val filterType = filter match
-      case _: FilterBy.ExactMatch[?] => "exact"
-    s"${filter.field.name}:$filterType:${filter.value}"
-
   private def hash[FIELD: FieldSchema](query: Query[FIELD], absentPart: String): Int =
     val limit = query.limit.value.toString
     val orderingFingerprint = orderingPart(query.ordering)
-    val filter = query.filters.toSeq.map(singleFilterPart).sorted.mkString(",")
+    val filter = CanonicalFilters.fingerprintPart(query.filters)
     MurmurHash3.stringHash(s"$limit;$orderingFingerprint;$filter;$absentPart")
 
   private inline def computeFingerprint[FIELD: FieldSchema](query: Query[FIELD]): Int =

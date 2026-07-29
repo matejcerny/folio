@@ -40,22 +40,22 @@ Adopt option 1: **the row class's type is the source of truth.**
 ```scala
 object KeysetField:
   def uniqueBy[FIELD, T, ID](idField: FIELD, extract: T => ID)(using
-      CursorValueCodec[ID]
+      FieldValueCodec[ID]
   ): Aux[FIELD, T, ID]
 
 trait KeysetField[FIELD, T]:
   def withField[V](field: FIELD, extract: T => V)(using
-      CursorValueCodec[V]
+      FieldValueCodec[V]
   ): Aux[FIELD, T, ID]
 
   def withField[V](field: FIELD, extract: T => Option[V])(using
-      CursorValueCodec[V]
+      FieldValueCodec[V]
   ): Aux[FIELD, T, ID]
 ```
 
-`CursorValueCodec` keeps shipping only atomic instances (`Int`, `Long`,
+`FieldValueCodec` keeps shipping only atomic instances (`Int`, `Long`,
 `String`, `OffsetDateTime`); there is **no** ambient
-`CursorValueCodec[Option[V]]` derivation. The two `withField` overloads
+`FieldValueCodec[Option[V]]` derivation. The two `withField` overloads
 each handle their case; the unique-field constructor (`uniqueBy`) has no
 `Option` overload, so the tiebreaker structurally cannot be absentable.
 
@@ -70,12 +70,12 @@ each handle their case; the unique-field constructor (`uniqueBy`) has no
 - **Unique field protection is structural, not runtime.** No
   `NotGiven`-style guards, no documentation-only constraints. An
   `Option`-typed unique field simply does not compile.
-- **No public `CursorValueCodec[Option[V]]` derivation** — the optional
+- **No public `FieldValueCodec[Option[V]]` derivation** — the optional
   handling is internal to the second `withField` overload, so it cannot
   be summoned in unrelated places by accident.
 - **Driver introspection is minimal.** `def absentableFields: Set[FIELD]`
   on `KeysetField` is enough for today's needs; richer per-field
-  metadata can be added when filter typing arrives (see [[project-folio-pre-1-0]]).
+  metadata can be added when filter typing arrives.
 
 ## Alternatives rejected
 

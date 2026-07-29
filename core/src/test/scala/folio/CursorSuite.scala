@@ -1,24 +1,3 @@
-/*
- * Copyright (c) 2026 Matej Cerny
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 package folio
 
 import java.util.Base64
@@ -91,7 +70,7 @@ object CursorSuite extends SimpleIOSuite:
 
   pureTest("decoding rejects keyset with arity above maxKeysetArity"):
     val decoded =
-      DecodedCursor(Direction.Forward, Position.Keyset(List.tabulate(17)(i => KeysetValue.IntV(i))))
+      DecodedCursor(Direction.Forward, Position.Keyset(List.tabulate(17)(i => FieldValue.IntV(i).present)))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
 
@@ -105,9 +84,9 @@ object CursorSuite extends SimpleIOSuite:
       Direction.Forward,
       Position.Keyset(
         List(
-          KeysetValue.StringV("alpha"),
-          KeysetValue.TimestampV(timestamp),
-          KeysetValue.LongV(99L)
+          FieldValue.StringV("alpha").present,
+          FieldValue.TimestampV(timestamp).present,
+          FieldValue.LongV(99L).present
         )
       )
     )
@@ -119,7 +98,7 @@ object CursorSuite extends SimpleIOSuite:
   pureTest("roundtrip for keyset with IntV value"):
     // Int-typed id so the IntV variant matches the id slot's codec.
     given KeysetField[TestField, Row] = KeysetField.uniqueBy(TestField.Id, (row: Row) => row.id.toInt)
-    val decoded = DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.IntV(42))))
+    val decoded = DecodedCursor(Direction.Forward, Position.Keyset(List(FieldValue.IntV(42).present)))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
 
@@ -152,6 +131,82 @@ object CursorSuite extends SimpleIOSuite:
       CursorTestKit.hex("02"),
       CursorTestKit.hashBytes(baseQuery),
       CursorTestKit.hex("01 03 00")
+    )
+    List(
+      expect.same(expected.toSeq, decodeBase64Url(cursor.value).toSeq),
+      expect.sameR(decoded, roundtrip)
+    ).combineAll
+
+  pureTest("encoding pins the IntV slot to tag 0x01 with a zigzag varint payload"):
+    // Int-typed id so the IntV variant matches the id slot's codec.
+    given KeysetField[TestField, Row] = KeysetField.uniqueBy(TestField.Id, (row: Row) => row.id.toInt)
+    val decoded = DecodedCursor(Direction.Forward, Position.Keyset(List(FieldValue.IntV(42).present)))
+    val cursor = Cursor.encode(decoded, baseQuery)
+    val roundtrip = Cursor.decode(cursor, baseQuery)
+
+    // flags=0x02 | hash=H | count=1 | tag=01 zigzag(42)=0x54
+    val expected = CursorTestKit.concat(
+      CursorTestKit.hex("02"),
+      CursorTestKit.hashBytes(baseQuery),
+      CursorTestKit.hex("01 01 54")
+    )
+    List(
+      expect.same(expected.toSeq, decodeBase64Url(cursor.value).toSeq),
+      expect.sameR(decoded, roundtrip)
+    ).combineAll
+
+  pureTest("encoding pins the LongV slot to tag 0x02 with a zigzag varint payload"):
+    val decoded = DecodedCursor(Direction.Forward, keysetOf(-1L))
+    val cursor = Cursor.encode(decoded, baseQuery)
+    val roundtrip = Cursor.decode(cursor, baseQuery)
+
+    // flags=0x02 | hash=H | count=1 | tag=02 zigzag(-1)=0x01
+    val expected = CursorTestKit.concat(
+      CursorTestKit.hex("02"),
+      CursorTestKit.hashBytes(baseQuery),
+      CursorTestKit.hex("01 02 01")
+    )
+    List(
+      expect.same(expected.toSeq, decodeBase64Url(cursor.value).toSeq),
+      expect.sameR(decoded, roundtrip)
+    ).combineAll
+
+  pureTest("encoding pins the TimestampV slot to tag 0x04 with epochSecond, nano, offsetSeconds"):
+    // OffsetDateTime-typed id so the TimestampV variant matches the id slot's codec.
+    val timestamp = java.time.OffsetDateTime
+      .ofInstant(java.time.Instant.ofEpochSecond(1L, 500L), java.time.ZoneOffset.ofHours(1))
+    given KeysetField[TestField, Row] = KeysetField.uniqueBy(TestField.Id, (_: Row) => timestamp)
+    val decoded = DecodedCursor(Direction.Forward, keysetOf(timestamp))
+    val cursor = Cursor.encode(decoded, baseQuery)
+    val roundtrip = Cursor.decode(cursor, baseQuery)
+
+    // flags=0x02 | hash=H | count=1 | tag=04 zigzag(1)=0x02 nano=500=0xf4 0x03 zigzag(3600)=0xa0 0x38
+    val expected = CursorTestKit.concat(
+      CursorTestKit.hex("02"),
+      CursorTestKit.hashBytes(baseQuery),
+      CursorTestKit.hex("01 04 02 f4 03 a0 38")
+    )
+    List(
+      expect.same(expected.toSeq, decodeBase64Url(cursor.value).toSeq),
+      expect.sameR(decoded, roundtrip)
+    ).combineAll
+
+  pureTest("encoding pins the Absent slot to tag 0x05 with no payload"):
+    given KeysetField[TestField, Row] =
+      KeysetField
+        .uniqueBy(TestField.Id, (row: Row) => row.id)
+        .withField(TestField.LastSeen, (row: Row) => row.lastSeen)
+    val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.LastSeen.ascending))
+    val decoded =
+      DecodedCursor(Direction.Forward, Position.Keyset(List(AnchorValue.Absent, FieldValue.LongV(5L).present)))
+    val cursor = Cursor.encode(decoded, query)
+    val roundtrip = Cursor.decode(cursor, query)
+
+    // flags=0x02 | hash=H | count=2 | tag=05 (no payload) | tag=02 zigzag(5)=0x0a
+    val expected = CursorTestKit.concat(
+      CursorTestKit.hex("02"),
+      CursorTestKit.hashBytes(query),
+      CursorTestKit.hex("02 05 02 0a")
     )
     List(
       expect.same(expected.toSeq, decodeBase64Url(cursor.value).toSeq),
@@ -210,6 +265,34 @@ object CursorSuite extends SimpleIOSuite:
     val decoded = Cursor.decode(cursor, modifiedQuery)
 
     expect.sameL(CursorDecodingError.StaleCursor, decoded)
+
+  pureTest("fingerprint differs when the filter field differs"):
+    val onName = baseQuery.copy(filters = Set(FilterBy.ExactMatch(TestField.Name, "alice")))
+    val onDescription = baseQuery.copy(filters = Set(FilterBy.ExactMatch(TestField.Description, "alice")))
+    expect(CursorTestKit.hashBytes(onName).toSeq != CursorTestKit.hashBytes(onDescription).toSeq)
+
+  pureTest("fingerprint differs when filter value types differ"):
+    val asInt = baseQuery.copy(filters = Set(FilterBy.ExactMatch(TestField.Name, 1)))
+    val asLong = baseQuery.copy(filters = Set(FilterBy.ExactMatch(TestField.Name, 1L)))
+    expect(CursorTestKit.hashBytes(asInt).toSeq != CursorTestKit.hashBytes(asLong).toSeq)
+
+  pureTest("fingerprint does not depend on filter Set insertion order"):
+    // Guards the ExactMatch equality basis: two cross-type filters that raw-value equality would
+    // collapse stay distinct, so both insertion orders keep both predicates and hash alike. A third
+    // filter on another field keeps the canonical field-name ordering in the picture too.
+    val asInt = FilterBy.ExactMatch(TestField.Name, 1)
+    val asLong = FilterBy.ExactMatch(TestField.Name, 1L)
+    val onCreatedAt = FilterBy.ExactMatch(TestField.CreatedAt, "2024-01-05")
+    val intFirst = baseQuery.copy(filters = Set[FilterBy[TestField]](asInt, asLong, onCreatedAt))
+    val longFirst = baseQuery.copy(filters = Set[FilterBy[TestField]](onCreatedAt, asLong, asInt))
+    List(
+      expect.same(3, intFirst.filters.size),
+      expect.same(CursorTestKit.hashBytes(intFirst).toSeq, CursorTestKit.hashBytes(longFirst).toSeq)
+    ).combineAll
+
+  pureTest("unfiltered fingerprint stays the filter-free hash"):
+    // Pins that adding the filter encoding did not shift fingerprints for queries without filters.
+    expect.same(CursorTestKit.hex("72 19 93 53").toSeq, CursorTestKit.hashBytes(baseQuery).toSeq)
 
   pureTest("decode rejects empty input as truncated"):
     val cursor = Cursor(Base64.getUrlEncoder.withoutPadding.encodeToString(Array.emptyByteArray))
@@ -407,7 +490,7 @@ object CursorSuite extends SimpleIOSuite:
         .withField(TestField.LastSeen, (row: Row) => row.lastSeen)
     val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.LastSeen.ascending))
     val decoded =
-      DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5L))))
+      DecodedCursor(Direction.Forward, Position.Keyset(List(AnchorValue.Absent, FieldValue.LongV(5L).present)))
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 
@@ -421,7 +504,7 @@ object CursorSuite extends SimpleIOSuite:
     val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.Name.ascending))
     // Forge a cursor with Absent in the Name slot (Name is registered required, not absentable).
     val decoded =
-      DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(7L))))
+      DecodedCursor(Direction.Forward, Position.Keyset(List(AnchorValue.Absent, FieldValue.LongV(7L).present)))
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 
@@ -433,7 +516,7 @@ object CursorSuite extends SimpleIOSuite:
   pureTest("decode rejects a forged variant in the id slot (StringV where Long expected)"):
     // No order fields, so the only cursor field is the Long id. Forge a StringV into that slot: it would otherwise
     // reach the SQL driver as a `bigint > text` bind and raise through F instead of a CursorDecodingError.
-    val decoded = DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.StringV("not-a-long"))))
+    val decoded = DecodedCursor(Direction.Forward, Position.Keyset(List(FieldValue.StringV("not-a-long").present)))
     val cursor = Cursor.encode(decoded, baseQuery)
     val roundtrip = Cursor.decode(cursor, baseQuery)
 
@@ -450,7 +533,10 @@ object CursorSuite extends SimpleIOSuite:
     val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.Name.ascending))
     // Name expects StringV; forge a LongV into that slot while keeping the id slot valid.
     val decoded =
-      DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.LongV(1L), KeysetValue.LongV(7L))))
+      DecodedCursor(
+        Direction.Forward,
+        Position.Keyset(List(FieldValue.LongV(1L).present, FieldValue.LongV(7L).present))
+      )
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 
@@ -465,7 +551,7 @@ object CursorSuite extends SimpleIOSuite:
     val decoded =
       DecodedCursor(
         Direction.Forward,
-        Position.Keyset(List(KeysetValue.LongV(1L), KeysetValue.LongV(7L), KeysetValue.LongV(99L)))
+        Position.Keyset(List(FieldValue.LongV(1L).present, FieldValue.LongV(7L).present, FieldValue.LongV(99L).present))
       )
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
@@ -479,7 +565,7 @@ object CursorSuite extends SimpleIOSuite:
         .withField(TestField.LastSeen, (row: Row) => row.lastSeen)
     val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.LastSeen.ascending))
     val decoded =
-      DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5L))))
+      DecodedCursor(Direction.Forward, Position.Keyset(List(AnchorValue.Absent, FieldValue.LongV(5L).present)))
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 
@@ -488,7 +574,7 @@ object CursorSuite extends SimpleIOSuite:
   pureTest("decode rejects keyset cursor with too few values"):
     val query = TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.Name.ascending))
     val decoded =
-      DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.LongV(7L))))
+      DecodedCursor(Direction.Forward, Position.Keyset(List(FieldValue.LongV(7L).present)))
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 
@@ -499,7 +585,9 @@ object CursorSuite extends SimpleIOSuite:
     val decoded =
       DecodedCursor(
         Direction.Forward,
-        Position.Keyset(List(KeysetValue.StringV("alice"), KeysetValue.LongV(7L), KeysetValue.LongV(99L)))
+        Position.Keyset(
+          List(FieldValue.StringV("alice").present, FieldValue.LongV(7L).present, FieldValue.LongV(99L).present)
+        )
       )
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
@@ -519,7 +607,7 @@ object CursorSuite extends SimpleIOSuite:
     val decoded =
       DecodedCursor(
         Direction.Forward,
-        Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(7L), KeysetValue.LongV(99L)))
+        Position.Keyset(List(AnchorValue.Absent, FieldValue.LongV(7L).present, FieldValue.LongV(99L).present))
       )
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
@@ -536,7 +624,10 @@ object CursorSuite extends SimpleIOSuite:
 
     val query = Query.empty[AliasField].copy(ordering = Vector(AliasField.IdAlias.ascending))
     val decoded =
-      DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.LongV(7L), KeysetValue.LongV(42L))))
+      DecodedCursor(
+        Direction.Forward,
+        Position.Keyset(List(FieldValue.LongV(7L).present, FieldValue.LongV(42L).present))
+      )
     val cursor = Cursor.encode(decoded, query)
     val roundtrip = Cursor.decode(cursor, query)
 

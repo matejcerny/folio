@@ -1,109 +1,100 @@
 # folio
 
-Scala 3 cursor-based pagination library.
+Scala 3 cursor-based pagination library. Domain language: `CONTEXT.md`. Decisions: `docs/adr/README.md`.
 
 ## Modules
 
-- `core` — main library (`folio-core`), no runtime dependencies (Weaver is test-only); JVM / JS / Native
-- `module/effect/cats` — optional Cats adapter (`folio-cats`), derives `FolioEffect` from `ApplicativeError`; JVM / JS / Native
-- `module/database/skunk` — Skunk integration (`folio-skunk`), depends on `folio-cats`; JVM / JS / Native
+- `core` — `folio-core`, no runtime deps (Weaver is test-only)
+- `module/effect/cats` — `folio-cats`, derives `FolioEffect` from `ApplicativeError`
+- `module/database/skunk` — `folio-skunk`, depends on `folio-cats`
 - `it` — PostgreSQL integration tests (JVM + Native), not published
 - `example` — usage example (JVM only), not published
 
-Cross-building uses sbt 2 `projectMatrix` (no sbt-typelevel). JVM keeps the short project name; JS/Native rows are `*JS` / `*Native`.
+All but `it`/`example` cross-build JVM / JS / Native via sbt 2 `projectMatrix` (single shared source
+tree, no sbt-typelevel). JVM keeps the short name; other rows are `*JS` / `*Native`.
 
 ## Key types
 
-- `Position` — pagination strategy, either `Keyset` (id-based, O(1) seek) or `Offset` (offset-based)
-- `Cursor` — opaque base64url-encoded string with embedded query fingerprint for stale detection
-- `FieldSchema[FIELD]` — typeclass mapping enum cases to string column names; `FieldSchema.fromMapping` derives the reverse `fromName` from the forward `name` mapping at compile time via `Mirror.SumOf`
-- `KeysetField[FIELD, T]` — typeclass that designates the unique field within `FIELD` and extracts its value from a row; required to enable keyset pagination
-- `CursorCodec` — typeclass for encoding/decoding the opaque cursor string (default: base64url)
 - `Query[FIELD]` — incoming query (filters, cursor, limit, ordering)
-- `ResolvedQuery[FIELD]` — query handed to `fetchRows` with cursor decoded into a concrete `Position` and a fetch limit applied
-- `Page[T]` — paginated result with previous/next cursors; built via `Page.withPagination`
-- `FolioError.CursorDecodingError` — decoding failures (invalid base64, bad format, stale cursor, etc.)
+- `ResolvedQuery[FIELD]` — handed to `fetchRows`: cursor decoded into a `Position`, `fetchLimit` applied
+- `Position` — `Keyset` (O(1) seek) or `Offset`
+- `Cursor` — opaque base64url string embedding a query fingerprint for stale detection
+- `FieldSchema[FIELD]` — enum case → column name; `fromMapping` derives the reverse via `Mirror.SumOf`
+- `KeysetField[FIELD, T]` — registers the unique field + extractors; presence enables keyset
+- `CursorCodec` — cursor string encoding (default base64url)
+- `Page[T]` — result with previous/next cursors; built via `Page.withPagination`
+- `FolioError` — `CursorDecodingError`, `InvalidQuery`
 
 ## User responsibilities
 
-Users must define:
-1. A `FIELD` enum (e.g. `enum MessageField { case Id, EnqueuedAt, LastReadAt }`)
-2. `given FieldSchema[FIELD]` — typically built via `FieldSchema.fromMapping { case ... => "col_name" }`, which only requires the forward `FIELD => String` direction
-3. _(optional, for keyset)_ `given KeysetField[FIELD, T]` — `KeysetField.uniqueBy(idField, _.id)` designates the unique field and extracts its value from each row. The id type is inferred from the extractor (any type with a `CursorValueCodec` instance — folio ships them for `Int`, `Long`, `String`, `OffsetDateTime`).
-4. _(optional, to enable keyset on non-id order fields)_ chain `.withField(field, extract)` calls onto the `KeysetField`, e.g. `KeysetField.uniqueBy(Id, _.id).withField(EnqueuedAt, _.enqueuedAt)`. Each registered field needs a `CursorValueCodec` for its value type.
-
-Keyset pagination is enabled only when `KeysetField[FIELD, T]` is in scope.
+1. A `FIELD` enum, e.g. `enum MessageField { case Id, EnqueuedAt, LastReadAt }`
+2. `given FieldSchema[FIELD]` — usually `FieldSchema.fromMapping { case ... => "col_name" }`
+3. _(optional, for keyset)_ `given KeysetField[FIELD, T]` — `KeysetField.uniqueBy(Id, _.id)`; value type
+   inferred from the extractor (needs a `FieldValueCodec`: `Int`, `Long`, `String`, `OffsetDateTime`)
+4. _(optional)_ chain `.withField(field, extract)` to allow keyset ordering on more fields
 
 ## Cursor strategy selection
 
-`Position.fromQuery` picks the strategy automatically:
+`Position.fromQuery`:
 
-When `KeysetField[FIELD, ?]` is provided:
-- All order fields registered (via `KeysetField.uniqueBy` / `.withField`) → `Keyset` (O(1) seek). The unique field is always registered. The cursor anchor encodes one value per order field, with the unique field appended as a tiebreaker if not already in the ordering.
-- Any order field not registered → `Offset` (offset fallback)
-- No ordering specified → `Keyset` with default ascending id ordering
-
-When `KeysetField[FIELD, ?]` is not provided:
-- Always `Offset` (offset-based pagination only)
+- No `KeysetField` in scope → always `Offset`
+- `KeysetField` in scope, all order fields registered → `Keyset`; anchor holds one value per order
+  field, unique field appended as tiebreaker if absent from the ordering
+- Any order field unregistered → `Offset` fallback
+- No ordering → `Keyset` with default ascending unique-field ordering
 
 ## Query construction
 
-`Query` defaults `filters` and `ordering` to empty and requires only `limit`. Prefer
-`Query(limit = n.items).orderBy(field.ascending, ...)` over spelling out empty collections.
-`ordering` is a `Vector[OrderBy[FIELD]]` (order-sensitive). `orderBy` replaces the ordering.
-Duplicate order fields (same field twice, regardless of order) are rejected at
-`Page.withPagination` and `Pagination.buildSql` as `FolioError.InvalidQuery`.
+`Query(limit = n.items).orderBy(field.ascending, ...)` — `filters` and `ordering` default to empty.
+`ordering` is an order-sensitive `Vector[OrderBy[FIELD]]`; `orderBy` replaces it. Duplicate order
+fields are rejected as `FolioError.InvalidQuery` at `Page.withPagination` / `Pagination.buildSql`.
+
+`filters` is a conjunctive `Set[FilterBy[FIELD]]`; `FilterBy.ExactMatch(field, value)` is typed and
+needs a `FieldValueCodec`. Identity is `(field, encoded value)`, so `ExactMatch(Id, 1)` and
+`ExactMatch(Id, 1L)` remain distinct and the fingerprint ignores set insertion order. `Set` is
+invariant, so ascribe `Set[FilterBy[FIELD]](...)` outside an expected-type position. Filtering needs
+no `KeysetField` registration (registration is about *ordering*); core never filters rows, it passes
+`filters` into `ResolvedQuery`. `folio-skunk` renders them as parameterized `=` predicates in the
+outer `WHERE` before positioning on both branches, so the inner `SELECT` must project every filter
+column under its `FieldSchema` name (ADR 0009).
 
 ## Page assembly
 
-`Page.withPagination[F[_]: FolioEffect, T, FIELD](query, fetchRows)` is the contextual convenience entry point. Adapters
-that also render a `ResolvedQuery` use the explicit
-`Page.withPagination(query, fetchRows, keyset: Option[KeysetField[FIELD, T]])` overload and pass that same option to the
-driver. The caller supplies a `fetchRows: ResolvedQuery[FIELD] => F[Seq[T]]` that fetches `ResolvedQuery.fetchLimit` rows
-(one more than the page `limit`); the extra row is dropped and used for hasMore detection. `ResolvedQuery.limit` is the
-page size the caller requested, and `Page[T].map` remaps page data while preserving the limit and both cursors. `FolioEffect` deliberately exposes only
-`map` and `raiseError`, keeping `folio-core` independent of Cats Effect, ZIO, Kyo, and `Future`. The result is
-`F[Page[T]]`; cursor and invalid-query failures are raised as `FolioError` in `F` rather than returned as a nested `Either`. Synchronous
-callers use `FolioEffect.Id` (which throws on failure). Cats and Cats Effect callers can depend on `folio-cats` and
-`import folio.cats.given`; driver modules hide that bridge. Other effect ecosystems provide the tiny native instance.
-Pure decoding APIs continue to return `Either`.
+`Page.withPagination[F[_]: FolioEffect, T, FIELD](query, fetchRows)` is the contextual entry point;
+adapters that also render a `ResolvedQuery` use the explicit overload taking
+`keyset: Option[KeysetField[FIELD, T]]` and pass the same option to the driver. `fetchRows` fetches
+`ResolvedQuery.fetchLimit` rows (limit + 1); the extra row drives hasMore and is dropped.
+`Page[T].map` preserves limit and both cursors. `FolioEffect` exposes only `map` and `raiseError`,
+keeping core free of Cats Effect / ZIO / Kyo / `Future` (ADR 0008); failures are raised in `F`, not
+returned as a nested `Either`. Sync callers use `FolioEffect.Id` (throws). Cats users
+`import folio.cats.given`. Pure decoding APIs still return `Either`.
 
 ## Code style
 
-- Scala 3 brace-less syntax throughout
-- Never use try/catch — use `scala.util.Try`, `Either`, or other Scala constructs instead
-- Use `Either.cond(condition, rightValue, leftValue)` instead of `if condition then Right(...) else Left(...)` (and the negated form)
-- Use descriptive variable names — avoid short abbreviations (e.g. `fingerprint` not `fp`, `cursorPosition` not `pos`, `fieldSchema` not `fs`)
-- Formatted with scalafmt (`sbt --client scalafmtAll`)
-- In tests, when asserting multiple `expect.same` values, use `List(expect.same(...), ...).combineAll` — not `and`
+- Scala 3 brace-less syntax
+- Never try/catch — use `Try`, `Either`, etc.
+- `Either.cond(condition, right, left)` over `if/then/else`
+- Descriptive names, no abbreviations (`fingerprint` not `fp`, `fieldSchema` not `fs`)
+- Run `format-file` / `sbt --client scalafmtAll`
+- In tests, combine assertions with `List(expect.same(...), ...).combineAll` — not `and`
 
 ## Build
 
-The project uses SBT 2 with a separate server. Prefer `--client`:
+SBT 2 with a separate server; prefer `--client`:
 
 ```
-sbt --client compile                # compile all aggregated modules, all platforms
-sbt --client core/compile           # compile core for JVM
-sbt --client coreJS/test            # run core tests on JS
-sbt --client coreNative/test        # run core tests on Native
-sbt --client test                   # unit + integration tests for all aggregated platforms
-sbt --client integration/test       # Postgres integration tests (JVM)
-sbt --client integrationNative/test # Postgres integration tests (Native)
-sbt --client publishLocal           # publish all non-skipped modules locally
+sbt --client compile                # all modules, all platforms
+sbt --client core/compile           # core, JVM
+sbt --client coreJS/test            # core tests on JS (also coreNative/test)
+sbt --client test                   # all aggregated tests
+sbt --client integration/test       # Postgres ITs (also integrationNative/test)
+sbt --client publishLocal
 sbt --client example/run
 sbt --client scalafmtAll
-sbt --client clean                  # clear outputs when you need a full re-run
+sbt --client clean                  # force a full re-run
 ```
 
-Module names: `core`, `coreJS`, `coreNative`, `cats`, `catsJS`, `catsNative`,
-`skunk`, `skunkJS`, `skunkNative`, `integration`, `integrationNative`, `example`.
-
-Cross-compilation uses sbt 2 `projectMatrix` with a single shared source tree per module. Integration is JVM +
-Native only. Versions and dependencies are defined inline in `build.sbt`. Cross-built deps use `%%` (sbt 2
-appends the platform suffix).
-
-Tests use [weaver-cats](https://typelevel.org/weaver-test/).
-
-With sbt 2, `test` is incremental: if nothing relevant changed it may report `Passed: Total 0` / `No tests to run`.
-That means nothing was re-executed, not that discovery is broken. Run `sbt --client clean` first when you need
-every suite to execute again.
+Modules: `core`, `cats`, `skunk` (each `+JS`/`+Native`), `integration`, `integrationNative`,
+`example`. Versions and deps are inline in `build.sbt`; cross-built deps use `%%`.
+Tests use [weaver-cats](https://typelevel.org/weaver-test/). `test` is incremental — `Passed: Total 0`
+means nothing was re-executed, not that discovery broke; `clean` first if you need every suite.

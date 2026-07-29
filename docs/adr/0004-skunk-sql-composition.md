@@ -16,7 +16,8 @@ Postgres.
 
 The user's `SELECT` is arbitrary — joins, CTEs, function calls, parameters of
 its own. folio cannot assume any particular shape, and must not reorder or
-reinterpret the user's filtering.
+reinterpret the filtering the user wrote into it. (folio's own
+`Query.filters` are a separate, modeled input; see ADR 0009 for how they render.)
 
 Identifier handling is a related concern: the keyset predicate and `ORDER BY`
 reference order/keyset columns by name, and those names come from
@@ -30,18 +31,19 @@ black box and wrapped:
 
 ```
 SELECT * FROM ( <select> ) AS usersql
- WHERE <keyset predicate>
+ WHERE <filters> AND ( <keyset predicate> )
  ORDER BY <ordering, direction-aware>
  LIMIT <limit>
 ```
 
-Keyset anchor values, the offset, and the limit are bound as Skunk parameters
+Filter values, keyset anchor values, the offset, and the limit are bound as Skunk parameters
 and combined via `AppliedFragment.|+|` — **never** baked into the SQL text as
 literals. Because the values are bound rather than spliced, the template text
 depends only on the query *shape*, not on the specific values, so advances that
 share a shape reuse Postgres' prepared statement. The template is **not**
 byte-identical across *all* advances: it varies with the shape — the first page
-emits no `WHERE`, and an `Absent` anchor value renders different rungs (`FALSE`
+emits no keyset predicate (and no `WHERE` at all when the query has no filters),
+and an `Absent` anchor value renders different rungs (`FALSE`
 / `IS NULL` / `IS NOT NULL`, `IS NOT DISTINCT FROM NULL`) with no bound
 parameter than a present value does.
 
@@ -59,7 +61,10 @@ a SQL-identifier quoting rule must not leak into core.
 
 - The user keeps full control of their `SELECT`; folio never parses or rewrites
   it. Any valid query the caller can write, folio can paginate, as long as the
-  order/keyset columns are projected by the inner `SELECT` (see ADR 0006).
+  inner `SELECT` projects every column folio references by name — filter, order,
+  and keyset columns — under its `FieldSchema` name. Filter columns joined this
+  contract with ADR 0009; a `SELECT` that satisfied the older order/keyset-only
+  contract can fail once a filter names a column it does not expose.
 - The prepared-statement template is stable across advances of the same query
   shape (page position, present-vs-`Absent` anchor pattern, ordering, direction),
   so the statement cache is reused within a shape rather than thrashed on every

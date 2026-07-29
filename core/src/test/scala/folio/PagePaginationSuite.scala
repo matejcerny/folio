@@ -1,24 +1,3 @@
-/*
- * Copyright (c) 2026 Matej Cerny
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 package folio
 
 import scala.concurrent.{ ExecutionContext, Future }
@@ -577,7 +556,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     // The encoded keyset must therefore carry two values (description + id) to satisfy arity validation
     // before reaching the strategy-mismatch check.
     val keysetPosition =
-      Position.Keyset(List(KeysetValue.StringV("ignored"), KeysetValue.LongV(5L)))
+      Position.Keyset(List(FieldValue.StringV("ignored").present, FieldValue.LongV(5L).present))
     val current = DecodedCursor(Direction.Forward, keysetPosition)
     val query = queryWithCurrent(offsetQuery, current)
     val error = raisedCursorError(Page.withPagination[Id, Row, TestField](query, _ => sys.error("fetch not expected")))
@@ -652,7 +631,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     expect.same(
       DecodedCursor(
         Direction.Forward,
-        Position.Keyset(List(KeysetValue.StringV("2024-01-02"), KeysetValue.LongV(4L)))
+        Position.Keyset(List(FieldValue.StringV("2024-01-02").present, FieldValue.LongV(4L).present))
       ),
       decoded
     )
@@ -662,7 +641,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
     val (captured, _) = pageCapturing(rowTable.fetch, createdAtKeysetQuery.copy(cursor = Some(cursor2)))
     expect.same(
-      List(Position.Keyset(List(KeysetValue.StringV("2024-01-02"), KeysetValue.LongV(4L)))),
+      List(Position.Keyset(List(FieldValue.StringV("2024-01-02").present, FieldValue.LongV(4L).present))),
       captured.map(_.position)
     )
 
@@ -717,7 +696,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     val decoded = decodedOf(cursor4, absentOrderQuery)
     // page3 ends with id=5 (None lastSeen); cursor encodes (Absent, id=5).
     expect.same(
-      DecodedCursor(Direction.Forward, Position.Keyset(List(KeysetValue.Absent, KeysetValue.LongV(5L)))),
+      DecodedCursor(Direction.Forward, Position.Keyset(List(AnchorValue.Absent, FieldValue.LongV(5L).present))),
       decoded
     )
 

@@ -71,8 +71,10 @@ lazy val skunk = (projectMatrix in file("module/database/skunk"))
   .jsPlatform(scalaVersions = Seq(Scala3), settings = jsNativeSettings)
   .nativePlatform(scalaVersions = Seq(Scala3), settings = jsNativeSettings)
 
+// No `core % "test->test"`: the integration suites use only folio's public API and own their fixtures (it/.../Rows.scala),
+// and core's unit fixtures declare a top-level `folio.Row` that would shadow this module's row model under `import folio.*`.
 lazy val integration = (projectMatrix in file("it"))
-  .dependsOn(skunk, core % "test->test")
+  .dependsOn(skunk)
   .settings(
     name := "folio-it",
     publish / skip := true,
