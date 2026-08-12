@@ -42,13 +42,7 @@ object Pagination:
         val keyset = None
         Page.withPagination[F, T, FIELD](query, fetchFromSession(_, session, decoder, select, keyset), keyset)
 
-  /** Paginate an opaque `select` using a session drawn from the supplied resource and decoder.
-    *
-    * Behaves like the `Session[F]` overload, but acquires a session for the duration of this call and releases it
-    * afterwards. This fits a pooled `Resource[F, Session[F]]` checkout; the `Session[F]` overload remains the primitive
-    * when the caller already holds a session and owns its lifecycle. Cursor, SQL, and session failures are raised in
-    * `F`.
-    */
+  /** Like the `Session[F]` overload, but checks out a session for the duration of this call and releases it after. */
   inline def withPagination[F[_]: Concurrent, T, FIELD: FieldSchema](
       query: Query[FIELD],
       session: Resource[F, Session[F]],
@@ -85,15 +79,17 @@ object Pagination:
     *
     * The subquery must project every filter, order, and keyset column under its `FieldSchema` name.
     *
-    * Values are bound through `AppliedFragment`; the SQL shape can still differ for the first page and `Absent`
-    * anchors. Pass the same `KeysetField` used to resolve the query, or `None` for offset-only pagination. A missing
-    * keyset field or mismatched anchor arity returns `Left` (ADR 0005).
+    * Pass the same `KeysetField` used to resolve the query, or `None` for offset-only pagination. A missing keyset
+    * field or mismatched anchor arity returns `Left` (ADR 0005). A `Position.Keyset` with unregistered cursor fields
+    * also returns `Left`: their absentability is unknown, so neither the seek nor the `NULLS` placement can be
+    * rendered. Offset skips that check — an unregistered order field is what selects the offset fallback.
     *
-    * `resolved.filters` is rendered as one conjunction of parameterized equality predicates that applies before
-    * pagination, on both the keyset and the offset branch, and also feeds the cursor fingerprint so a changed filter
-    * set invalidates outstanding cursors. Bound parameters appear in the order inner `SELECT`, filters, keyset or
-    * offset, fetch limit. Offset queries append the unique field when available; without one, the caller must supply a
-    * total order (ADR 0007).
+    * Bound parameters appear in the order inner `SELECT`, filters, keyset or offset, fetch limit. Offset queries append
+    * the unique field when available; without one, the caller must supply a total order (ADR 0007).
+    *
+    * Only a field registered as absentable renders an explicit `NULLS LAST` forward / `NULLS FIRST` backward; anything
+    * else has unknown absentability and takes PostgreSQL's default placement, which avoids a mismatch with an otherwise
+    * compatible B-tree index (ADR 0010).
     *
     * Filter and keyset values use fixed Skunk codecs (`int4`, `int8`, `text`, `timestamptz`). UUID, numeric/BigDecimal,
     * and plain timestamp fields require a compatible cast in `select`.
@@ -109,7 +105,16 @@ object Pagination:
         case keysetPosition: Position.Keyset =>
           keyset match
             case Some(keysetField) =>
-              renderKeyset(resolved, select, keysetPosition, keysetField.field, keysetField.absentableFields)
+              val cursorFields = CursorAdvance.cursorFieldsFor(resolved.ordering, keysetField.field)
+              val unregisteredFields = cursorFields.filterNot(keysetField.fields.contains)
+              val registrationError = FolioError.InvalidQuery(
+                s"Position.Keyset has unregistered cursor field(s): ${unregisteredFields.map(_.name).mkString(", ")}"
+              )
+              Either
+                .cond(unregisteredFields.isEmpty, (), registrationError)
+                .flatMap(_ =>
+                  renderKeyset(resolved, select, keysetPosition, keysetField.field, keysetField.absentableFields)
+                )
             case None =>
               Left(
                 FolioError.InvalidQuery(
@@ -133,9 +138,10 @@ object Pagination:
         val seek = Option.when(keyset.values.nonEmpty):
           keysetPredicate(resolved.ordering, resolved.direction, cursorFields, keyset.values, absentableFields)
 
-        val orderByClause = raw(" ORDER BY ") |+| orderBy(resolved.ordering, cursorFields, resolved.direction)
+        val orderingClause =
+          raw(" ORDER BY ") |+| orderBy(resolved.ordering, cursorFields, resolved.direction, absentableFields)
 
-        wrap(select) |+| where(filterPredicate(resolved.filters), seek) |+| orderByClause |+| limitClause(resolved)
+        wrap(select) |+| where(filterPredicate(resolved.filters), seek) |+| orderingClause |+| limitClause(resolved)
       },
       FolioError.InvalidQuery(
         s"Keyset anchor arity mismatch: ${cursorFields.size} cursor field(s) but ${keyset.values.size} anchor value(s)"
@@ -152,7 +158,9 @@ object Pagination:
     val orderFields = keyset match
       case Some(keysetField) => CursorAdvance.cursorFieldsFor(resolved.ordering, keysetField.field)
       case None              => resolved.ordering.toList.map(_.field)
-    val orderingClause = orderBy(resolved.ordering, orderFields, Direction.Forward)
+    // Only a registered absentable field is known absentable; anything unregistered here is unknown (ADR 0010).
+    val absentableFields = keyset.map(_.absentableFields).getOrElse(Set.empty[FIELD])
+    val orderingClause = orderBy(resolved.ordering, orderFields, Direction.Forward, absentableFields)
     val orderByClause =
       if orderFields.isEmpty then AppliedFragment.empty
       else raw(" ORDER BY ") |+| orderingClause
@@ -169,10 +177,8 @@ object Pagination:
 
   /** The single outer `WHERE`, or nothing when the query has neither filters nor an anchor.
     *
-    * Filters come first so bound parameters stay in the order [[buildSql]] documents. The keyset seek is a disjunction,
-    * so it is parenthesized before being ANDed with the filters — `AND` binds tighter than `OR`, so without the
-    * parentheses the trailing rungs of the seek would escape the filters and leak rows. A query with no filters emits
-    * the bare seek, which keeps unfiltered SQL byte-identical to a folio without filtering.
+    * Filters come first to keep the parameter order [[buildSql]] documents. The seek is a disjunction, so it is
+    * parenthesized before being ANDed — otherwise its trailing rungs would escape the filters and leak rows.
     */
   private def where(filters: Option[AppliedFragment], seek: Option[AppliedFragment]): AppliedFragment =
     val conjuncts = (filters, seek) match
@@ -186,20 +192,16 @@ object Pagination:
 
   /** Conjunction of a query's exact-match filters, or `None` when the query has none.
     *
-    * Filters render in [[folio.CanonicalFilters]] order, so the SQL text of a given filter set does not depend on the
-    * iteration order of the `Set` that carried it: the prepared-statement cache keeps working and the text is worth
-    * asserting on. Each value is bound through its fixed Skunk codec (`int4`, `int8`, `text`, `timestamptz`) and
-    * compared against the column at its own type — no value is ever interpolated into the SQL and no column is cast.
-    *
-    * Two filters on the same field are two predicates, ANDed like any others, because [[folio.FilterBy.ExactMatch]]
-    * identity is `(field, encoded value)`.
+    * Filters render in [[folio.CanonicalFilters]] order, so the SQL text does not depend on `Set` iteration order and
+    * the prepared-statement cache keeps working. Two filters on the same field are two ANDed predicates, since
+    * [[folio.FilterBy.ExactMatch]] identity is `(field, encoded value)`.
     */
   private[skunk] def filterPredicate[FIELD: FieldSchema](filters: Set[FilterBy[FIELD]]): Option[AppliedFragment] =
     val predicates = CanonicalFilters.sorted(filters).map(filterComparison).toList
     Option.when(predicates.nonEmpty)(joinFragments(predicates, raw(" AND ")))
 
-  /** The operator a single filter renders with. Matching on the predicate rather than assuming `=` keeps the next
-    * `FilterBy` case an exhaustivity error here instead of a silent mis-render.
+  /** The operator a single filter renders with. Matching keeps the next `FilterBy` case an exhaustivity error here
+    * instead of a silent mis-render.
     */
   private def filterComparison[FIELD: FieldSchema](filter: FilterBy[FIELD]): AppliedFragment = filter match
     case _: FilterBy.ExactMatch[?, ?] =>
@@ -275,34 +277,40 @@ object Pagination:
   private def orderBy[FIELD: FieldSchema](
       ordering: Vector[OrderBy[FIELD]],
       cursorFields: List[FIELD],
-      direction: Direction
+      direction: Direction,
+      absentableFields: Set[FIELD]
   ): AppliedFragment =
     val clauses = cursorFields.map: field =>
-      val appended = !ordering.exists(_.field == field)
-      orderByClause(columnReference(field), orderFor(ordering, field), direction, appended)
+      orderByClause(
+        columnReference(field),
+        orderFor(ordering, field),
+        direction,
+        absentableFields.contains(field)
+      )
     joinFragments(clauses, raw(", "))
 
-  /** Appended unique fields use their default ascending order without a NULLS clause. Order fields reverse both order
-    * and NULL placement for backward traversal (ADRs 0001 and 0003).
+  /** Backward traversal reverses both the order and the `Absent` placement (ADRs 0001 and 0003).
+    *
+    * The `NULLS` clause is emitted only for a known-absentable field — the same set drives the seek predicate, so
+    * `ORDER BY` and the predicate agree (ADR 0010).
     */
   private def orderByClause(
       column: AppliedFragment,
       order: Order,
       direction: Direction,
-      appended: Boolean
+      isAbsentable: Boolean
   ): AppliedFragment =
-    val keyword =
-      if appended then
-        direction match
-          case Direction.Forward  => "ASC"
-          case Direction.Backward => "DESC"
+    val effectiveOrder = if direction == Direction.Backward then order.flip else order
+    val orderKeyword = effectiveOrder match
+      case Order.Ascending  => "ASC"
+      case Order.Descending => "DESC"
+    val nullsPlacement =
+      if !isAbsentable then ""
       else
-        (order, direction) match
-          case (Order.Ascending, Direction.Forward)   => "ASC NULLS LAST"
-          case (Order.Descending, Direction.Forward)  => "DESC NULLS LAST"
-          case (Order.Ascending, Direction.Backward)  => "DESC NULLS FIRST"
-          case (Order.Descending, Direction.Backward) => "ASC NULLS FIRST"
-    column |+| raw(" " + keyword)
+        direction match
+          case Direction.Forward  => " NULLS LAST"
+          case Direction.Backward => " NULLS FIRST"
+    column |+| raw(" " + orderKeyword + nullsPlacement)
 
   private def orderFor[FIELD](ordering: Vector[OrderBy[FIELD]], field: FIELD): Order =
     ordering.find(_.field == field).map(_.order).getOrElse(Order.Default)
@@ -321,9 +329,7 @@ object Pagination:
       case AnchorValue.Present(fieldValue) => bindFieldValue(fieldValue)
       case AnchorValue.Absent              => raw("NULL")
 
-  /** Binds a value at its own PostgreSQL type using the fixed codec mapping documented on [[buildSql]]. Shared by
-    * keyset anchors and filter values so both bind a given [[folio.FieldValue]] the same way.
-    */
+  /** Binds a value at its own PostgreSQL type using the fixed codec mapping documented on [[buildSql]]. */
   private def bindFieldValue(value: FieldValue): AppliedFragment =
     value match
       case FieldValue.IntV(intValue)             => sql"$int4".apply(intValue)

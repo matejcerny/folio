@@ -11,12 +11,10 @@ case class Message(id: Long, topic: String, enqueuedAt: OffsetDateTime, lastRead
 enum MessageField derives FieldSchema.SnakeCase:
   case Id, Topic, EnqueuedAt, LastReadAt
 
-// Step 2: Designate the unique field and how to extract it from a row — opts in to keyset pagination.
-// Register additional order fields via `.withField(...)` so keyset works on those columns too;
-// `T => Option[V]` marks the field as absentable, so missing values encode as `AnchorValue.Absent`
-// and order after present values regardless of direction.
-// Topic is deliberately not registered: it is only ever filtered on, and filtering needs no keyset registration.
-// Registration is about *ordering* — it is what lets keyset seek on a field instead of falling back to offset.
+// Step 2: Designate the unique field and how to extract it — opts in to keyset pagination.
+// Register additional order fields via `.withField(...)`; the `T => Option[V]` overload marks a field absentable, so
+// missing values encode as `AnchorValue.Absent` and order after present ones regardless of direction.
+// Topic stays unregistered: registration is about *ordering*, and filtering needs none.
 given KeysetField[MessageField, Message] =
   KeysetField
     .uniqueBy(MessageField.Id, (message: Message) => message.id)
@@ -42,8 +40,7 @@ given KeysetField[MessageField, Message] =
 
   val query = Query(limit = 2.items).orderBy(MessageField.LastReadAt.descending)
 
-  // With KeysetField in scope and LastReadAt registered as absentable via `.withField` (Option overload),
-  // this picks keyset; the cursor anchor is (lastReadAt, id) and a missing lastReadAt encodes as Absent.
+  // KeysetField is in scope and LastReadAt is registered absentable, so this picks keyset with a (lastReadAt, id) anchor.
   val page = Page.withPagination[FolioEffect.Id, Message, MessageField](query, _ => rows)
   println(s"Next:      ${page.nextCursor.map(_.value)}")
   println(s"Previous:  ${page.previousCursor.map(_.value)}")

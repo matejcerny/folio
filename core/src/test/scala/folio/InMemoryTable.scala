@@ -6,16 +6,15 @@ final class InMemoryTable[FIELD: FieldSchema, T](rows: Vector[T], extract: (FIEL
 
   inline def fetch(resolved: ResolvedQuery[FIELD]): Seq[T] =
     val filtered = rows.filter(matches(_, resolved.filters))
-    // Backward traversal reverses ordering and Absent placement (ADR 0003), but only for keyset seeks:
-    // an offset position already encodes the absolute slot of the previous page, so direction is a no-op.
+    // Backward reverses ordering and Absent placement (ADR 0003), but only for keyset seeks: an offset position already
+    // encodes the absolute slot, so direction is a no-op there.
     val reverseTraversal = resolved.direction == Direction.Backward && resolved.position.isInstanceOf[Position.Keyset]
     val ordered = applyOrdering(filtered, resolved.ordering, reverseTraversal)
     val skipped = applyPosition(ordered, resolved.position, resolved.ordering)
     skipped.take(resolved.fetchLimit.value)
 
   private def matches(row: T, filters: Set[FilterBy[FIELD]]): Boolean =
-    // Every column in this harness is text, so only a StringV filter can ever match; a numeric or
-    // timestamp filter value matches nothing here, just as it would not match a text column.
+    // Every column here is text, so only a StringV filter can match — as against a real text column.
     filters.forall: filter =>
       filter.encodedValue match
         case FieldValue.StringV(value) => extract(filter.field, row).contains(value)
@@ -60,8 +59,7 @@ final class InMemoryTable[FIELD: FieldSchema, T](rows: Vector[T], extract: (FIEL
 
 private object InMemoryTable:
 
-  // ADR 0001: Absent (None) sorts after non-Absent (Some) in canonical forward order, regardless of direction.
-  // Only the Some/Some comparison flips between asc and desc.
+  // ADR 0001: Absent sorts after Some in canonical forward order regardless of direction; only Some/Some flips.
   val absentLastAscending: Ordering[Option[String]] =
     Ordering.fromLessThan: (lhs, rhs) =>
       (lhs, rhs) match
@@ -78,8 +76,8 @@ private object InMemoryTable:
         case (Some(_), None)    => true
         case (Some(l), Some(r)) => l > r
 
-  // ADR 0003: backward traversal reverses both order and Absent placement, so the reverse
-  // seek crosses the Some/Absent boundary in the same canonical sequence walked in reverse.
+  // ADR 0003: backward reverses both order and Absent placement, so the seek crosses the Some/Absent boundary in the
+  // canonical sequence walked in reverse.
   val absentFirstAscending: Ordering[Option[String]] =
     Ordering.fromLessThan: (lhs, rhs) =>
       (lhs, rhs) match

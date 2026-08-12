@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted — 2026-05-30.
+Accepted — 2026-05-30. The worked example below orders by absentable columns, so
+its emitted clauses are unchanged; for a required or unregistered column see
+[ADR 0010](0010-nulls-clause-for-absentable-fields-only.md), where backward
+traversal reverses the order but emits no `NULLS` clause.
 
 ## Context
 

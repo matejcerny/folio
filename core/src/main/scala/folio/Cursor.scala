@@ -140,11 +140,10 @@ object Cursor:
           .toLeft(())
       case _ => Right(())
 
-  /** Reject a decoded anchor whose slot carries a [[FieldValue]] variant the field's registered codec cannot consume
-    * (e.g. a forged `StringV` in a `Long` id slot). The query fingerprint pins the query shape but not the anchor's
-    * per-slot variants, so without this check a type-forged cursor would pass core validation and reach the SQL driver
-    * as a mismatched bind, surfacing as a driver error through `F` instead of a [[CursorDecodingError]]. `Absent` slots
-    * pass here; their absentability is validated by [[validateAbsentSlots]].
+  /** Reject a decoded anchor slot carrying a [[FieldValue]] variant the field's codec cannot consume (e.g. a forged
+    * `StringV` in a `Long` id slot). The fingerprint pins the query shape but not per-slot variants, so without this a
+    * forged cursor would reach the driver as a mismatched bind instead of failing as a [[CursorDecodingError]].
+    * `Absent` slots pass here; [[validateAbsentSlots]] handles them.
     */
   private def validateVariantSlots[FIELD: FieldSchema](
       decoded: DecodedCursor,

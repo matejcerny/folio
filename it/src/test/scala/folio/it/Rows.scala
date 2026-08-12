@@ -12,9 +12,8 @@ import folio.*
 // The `rows` table (it/sql/init.sql) as folio sees it: the row model, its field enum, the keyset registration, and the
 // SQL the integration suites reuse.
 //
-// Shared by IntegrationSuite (unfiltered pagination) and FilteredIntegrationSuite (filtered pagination) so both
-// exercise one schema and one SELECT. Each suite still owns its own dataset — the unfiltered cases need distinct values
-// to pin a total order, the filtered cases need repeated values so a filter can match several rows.
+// Shared by IntegrationSuite and FilteredIntegrationSuite so both exercise one schema and one SELECT. Each suite owns
+// its dataset: unfiltered cases need distinct values to pin a total order, filtered cases need repeated ones.
 
 final case class Row(
     id: Long,
@@ -32,9 +31,8 @@ enum RowField derives FieldSchema.SnakeCase:
 
 // LastSeen is registered via the `T => Option[V]` overload, marking it absentable.
 //
-// Description and GroupId are deliberately not registered: ordering by either forces the offset branch, and GroupId
-// additionally shows that a *filter* needs no keyset registration at all — filtering by group_id still paginates by
-// keyset.
+// Description and GroupId are deliberately not registered: ordering by either forces the offset branch, while filtering
+// by group_id still paginates by keyset — filters need no registration.
 given KeysetField[RowField, Row] =
   KeysetField
     .uniqueBy(RowField.Id, (row: Row) => row.id)
@@ -47,9 +45,8 @@ private val base: OffsetDateTime = OffsetDateTime.of(2026, 1, 1, 0, 0, 0, 0, Zon
 
 def at(seconds: Long): OffsetDateTime = base.plusSeconds(seconds).truncatedTo(ChronoUnit.SECONDS)
 
-// Projection order (id, name, created_at, description, last_seen, group_id, payload) matches Row's field order. The
-// first six match their FieldSchema names (the column-name contract, ADR 0004: the inner SELECT must expose every
-// filter, order, and keyset column under that name); `payload` is an extra projected column folio does not know about.
+// Projection order matches Row's field order. The first six columns match their FieldSchema names (ADR 0004: the inner
+// SELECT must expose every filter, order, and keyset column under that name); `payload` is extra and folio-invisible.
 // One Codec[Row] serves both the SELECT decoder and the INSERT encoder.
 val rowCodec: Codec[Row] =
   (int8 *: text *: timestamptz *: text *: timestamptz.opt *: int8 *: text).to[Row]

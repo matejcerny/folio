@@ -28,8 +28,8 @@ object PaginationSuite extends SimpleIOSuite:
       .withField(MessageField.EnqueuedAt, (message: Message) => message.enqueuedAt)
       .withField(MessageField.LastReadAt, (message: Message) => message.lastReadAt)
 
-  // Distinct enum + hand-written schema to exercise identifier quoting/escaping: an ordinary name, a reserved word,
-  // and a name with an embedded double quote. No KeysetField in scope, so these only ever take the offset branch.
+  // Hand-written schema exercising identifier quoting: an ordinary name, a reserved word, and an embedded double quote.
+  // No KeysetField in scope, so these only take the offset branch.
   enum QuoteField:
     case Plain, Reserved, Weird
 
@@ -51,6 +51,13 @@ object PaginationSuite extends SimpleIOSuite:
 
   private val messageKeyset: KeysetField[MessageField, Message] = summon
 
+  // Registers Id and EnqueuedAt but deliberately not the Option-typed LastReadAt: ordering by LastReadAt is what
+  // selects the keyset-to-offset fallback, and its absentability is then unknown to the driver (ADR 0010).
+  private val partialKeyset: KeysetField[MessageField, Message] =
+    KeysetField
+      .uniqueBy(MessageField.Id, (message: Message) => message.id)
+      .withField(MessageField.EnqueuedAt, (message: Message) => message.enqueuedAt)
+
   private def sqlOf(query: ResolvedQuery[MessageField]): String =
     Pagination.buildSql(query, select, Some(messageKeyset)) match
       case Right(applied) => applied.fragment.sql
@@ -61,26 +68,35 @@ object PaginationSuite extends SimpleIOSuite:
       case Right(applied) => applied.fragment.encoder.types.map(_.name)
       case Left(error)    => List(s"buildSql failed: $error")
 
+  /** The `ORDER BY` list alone, excluding the trailing `OFFSET` / `LIMIT` clause. */
+  private def orderByOf(
+      query: ResolvedQuery[MessageField],
+      keyset: Option[KeysetField[MessageField, ?]] = Some(messageKeyset)
+  ): String =
+    Pagination.buildSql(query, select, keyset) match
+      case Right(applied) => applied.fragment.sql.split(" ORDER BY ").last.split(" OFFSET | LIMIT ").head
+      case Left(error)    => s"buildSql failed: $error"
+
   // === Single non-absentable cursor field (order by id): all four strict-step rows ===
 
-  pureTest("ASC forward: strict `>`, ORDER BY ASC NULLS LAST"):
+  pureTest("ASC forward: strict `>`, ORDER BY ASC"):
     val query = resolved(Vector(MessageField.Id.ascending), Position.Keyset(List(FieldValue.LongV(5).present)))
     List(
       expect.same(
-        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" > $1) ORDER BY usersql."id" ASC NULLS LAST LIMIT $2""",
+        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" > $1) ORDER BY usersql."id" ASC LIMIT $2""",
         sqlOf(query)
       ),
       expect.same(List("int8", "int4"), typesOf(query))
     ).combineAll
 
-  pureTest("DESC forward: strict `<`, ORDER BY DESC NULLS LAST"):
+  pureTest("DESC forward: strict `<`, ORDER BY DESC"):
     val query = resolved(Vector(MessageField.Id.descending), Position.Keyset(List(FieldValue.LongV(5).present)))
     expect.same(
-      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" < $1) ORDER BY usersql."id" DESC NULLS LAST LIMIT $2""",
+      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" < $1) ORDER BY usersql."id" DESC LIMIT $2""",
       sqlOf(query)
     )
 
-  pureTest("ASC backward: strict `<`, ORDER BY DESC NULLS FIRST"):
+  pureTest("ASC backward: strict `<`, ORDER BY DESC"):
     val query =
       resolved(
         Vector(MessageField.Id.ascending),
@@ -88,11 +104,11 @@ object PaginationSuite extends SimpleIOSuite:
         Direction.Backward
       )
     expect.same(
-      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" < $1) ORDER BY usersql."id" DESC NULLS FIRST LIMIT $2""",
+      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" < $1) ORDER BY usersql."id" DESC LIMIT $2""",
       sqlOf(query)
     )
 
-  pureTest("DESC backward: strict `>`, ORDER BY ASC NULLS FIRST"):
+  pureTest("DESC backward: strict `>`, ORDER BY ASC"):
     val query =
       resolved(
         Vector(MessageField.Id.descending),
@@ -100,7 +116,7 @@ object PaginationSuite extends SimpleIOSuite:
         Direction.Backward
       )
     expect.same(
-      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" > $1) ORDER BY usersql."id" ASC NULLS FIRST LIMIT $2""",
+      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."id" > $1) ORDER BY usersql."id" ASC LIMIT $2""",
       sqlOf(query)
     )
 
@@ -209,7 +225,7 @@ object PaginationSuite extends SimpleIOSuite:
     )
     List(
       expect.same(
-        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."enqueued_at" < $1) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $2 AND (usersql."last_read_at" > $3 OR usersql."last_read_at" IS NULL)) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $4 AND usersql."last_read_at" IS NOT DISTINCT FROM $5 AND (usersql."id" > $6)) ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."last_read_at" ASC NULLS LAST, usersql."id" ASC LIMIT $7""",
+        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."enqueued_at" < $1) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $2 AND (usersql."last_read_at" > $3 OR usersql."last_read_at" IS NULL)) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $4 AND usersql."last_read_at" IS NOT DISTINCT FROM $5 AND (usersql."id" > $6)) ORDER BY usersql."enqueued_at" DESC, usersql."last_read_at" ASC NULLS LAST, usersql."id" ASC LIMIT $7""",
         sqlOf(query)
       ),
       expect.same(List("timestamptz", "timestamptz", "text", "timestamptz", "text", "int8", "int4"), typesOf(query))
@@ -223,7 +239,7 @@ object PaginationSuite extends SimpleIOSuite:
       Position.Keyset(List(FieldValue.TimestampV(instant).present, FieldValue.LongV(5).present))
     )
     expect.same(
-      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."enqueued_at" < $1) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $2 AND (usersql."id" > $3)) ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC LIMIT $4""",
+      """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."enqueued_at" < $1) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $2 AND (usersql."id" > $3)) ORDER BY usersql."enqueued_at" DESC, usersql."id" ASC LIMIT $4""",
       sqlOf(query)
     )
 
@@ -231,7 +247,7 @@ object PaginationSuite extends SimpleIOSuite:
     val query = resolved(Vector(MessageField.EnqueuedAt.descending), Position.Keyset.First)
     List(
       expect.same(
-        """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC LIMIT $1""",
+        """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."enqueued_at" DESC, usersql."id" ASC LIMIT $1""",
         sqlOf(query)
       ),
       expect.same(List("int4"), typesOf(query))
@@ -243,7 +259,7 @@ object PaginationSuite extends SimpleIOSuite:
     val query = resolved(Vector(MessageField.EnqueuedAt.descending), Position.Offset.unsafe(40))
     List(
       expect.same(
-        """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC OFFSET $1 LIMIT $2""",
+        """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."enqueued_at" DESC, usersql."id" ASC OFFSET $1 LIMIT $2""",
         sqlOf(query)
       ),
       expect.same(List("int8", "int4"), typesOf(query))
@@ -264,6 +280,63 @@ object PaginationSuite extends SimpleIOSuite:
     expect.same(
       Right("""SELECT * FROM (SELECT * FROM messages) AS usersql OFFSET $1 LIMIT $2"""),
       Pagination.buildSql(query, select, None).map(_.fragment.sql)
+    )
+
+  // === NULL placement is driven by known absentability (ADR 0010) ===
+
+  pureTest("ORDER BY matrix: the NULLS clause is emitted exactly for the known-absentable field"):
+    def orderByFor(order: OrderBy[MessageField], direction: Direction): String =
+      orderByOf(resolved(Vector(order), Position.Keyset.First, direction))
+    List(
+      // Id is registered required: a bare keyword in all four cells, so a default B-tree index still matches.
+      expect.same("""usersql."id" ASC""", orderByFor(MessageField.Id.ascending, Direction.Forward)),
+      expect.same("""usersql."id" DESC""", orderByFor(MessageField.Id.descending, Direction.Forward)),
+      expect.same("""usersql."id" DESC""", orderByFor(MessageField.Id.ascending, Direction.Backward)),
+      expect.same("""usersql."id" ASC""", orderByFor(MessageField.Id.descending, Direction.Backward)),
+      // LastReadAt is registered absentable: explicit placement, matching the seek predicate's NULL handling.
+      expect.same(
+        """usersql."last_read_at" ASC NULLS LAST, usersql."id" ASC""",
+        orderByFor(MessageField.LastReadAt.ascending, Direction.Forward)
+      ),
+      expect.same(
+        """usersql."last_read_at" DESC NULLS LAST, usersql."id" ASC""",
+        orderByFor(MessageField.LastReadAt.descending, Direction.Forward)
+      ),
+      expect.same(
+        """usersql."last_read_at" DESC NULLS FIRST, usersql."id" DESC""",
+        orderByFor(MessageField.LastReadAt.ascending, Direction.Backward)
+      ),
+      expect.same(
+        """usersql."last_read_at" ASC NULLS FIRST, usersql."id" DESC""",
+        orderByFor(MessageField.LastReadAt.descending, Direction.Backward)
+      )
+    ).combineAll
+
+  pureTest("naming the required unique field renders exactly like letting folio append it"):
+    val named = resolved(Vector(MessageField.EnqueuedAt.descending, MessageField.Id.ascending), Position.Keyset.First)
+    val appended = resolved(Vector(MessageField.EnqueuedAt.descending), Position.Keyset.First)
+    List(
+      expect.same(orderByOf(appended), orderByOf(named)),
+      expect.same("""usersql."enqueued_at" DESC, usersql."id" ASC""", orderByOf(named))
+    ).combineAll
+
+  pureTest("offset branch keeps the NULLS clause for a registered absentable field"):
+    val query = resolved(Vector(MessageField.LastReadAt.ascending), Position.Offset.unsafe(0))
+    expect.same("""usersql."last_read_at" ASC NULLS LAST, usersql."id" ASC""", orderByOf(query))
+
+  pureTest("offset branch with keyset = None: absentability is unknown, so no NULLS clause"):
+    val query = resolved(Vector(MessageField.LastReadAt.ascending), Position.Offset.unsafe(0))
+    expect.same("""usersql."last_read_at" ASC""", orderByOf(query, None))
+
+  pureTest("offset fallback: a field unregistered in the supplied KeysetField is unknown, so no NULLS clause"):
+    val query = resolved(Vector(MessageField.LastReadAt.descending), Position.Offset.unsafe(0))
+    expect.same("""usersql."last_read_at" DESC, usersql."id" ASC""", orderByOf(query, Some(partialKeyset)))
+
+  pureTest("keyset position with an unregistered cursor field returns Left, never SQL"):
+    val query = resolved(Vector(MessageField.LastReadAt.ascending), Position.Keyset.First)
+    expect.same(
+      Left(FolioError.InvalidQuery("Position.Keyset has unregistered cursor field(s): last_read_at")),
+      Pagination.buildSql(query, select, Some(partialKeyset)).map(_.fragment.sql)
     )
 
   // === Keyset value -> codec mapping ===
@@ -291,7 +364,7 @@ object PaginationSuite extends SimpleIOSuite:
     )
     expect.same(
       Right(
-        """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."plain_col" ASC NULLS LAST, usersql."order" ASC NULLS LAST, usersql."a""b" ASC NULLS LAST OFFSET $1 LIMIT $2"""
+        """SELECT * FROM (SELECT * FROM messages) AS usersql ORDER BY usersql."plain_col" ASC, usersql."order" ASC, usersql."a""b" ASC OFFSET $1 LIMIT $2"""
       ),
       Pagination.buildSql(query, select, None).map(_.fragment.sql)
     )
@@ -308,7 +381,7 @@ object PaginationSuite extends SimpleIOSuite:
     List(
       expect.same(
         Right(
-          """SELECT * FROM (SELECT * FROM messages WHERE tenant = $1) AS usersql WHERE (usersql."id" > $2) ORDER BY usersql."id" ASC NULLS LAST LIMIT $3"""
+          """SELECT * FROM (SELECT * FROM messages WHERE tenant = $1) AS usersql WHERE (usersql."id" > $2) ORDER BY usersql."id" ASC LIMIT $3"""
         ),
         applied.map(_.fragment.sql)
       ),

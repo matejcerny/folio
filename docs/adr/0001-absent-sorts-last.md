@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted — 2026-05-30.
+Accepted — 2026-05-30. The canonical core policy stands; the *explicit SQL
+placement* below is refined by
+[ADR 0010](0010-nulls-clause-for-absentable-fields-only.md), which emits the
+`NULLS` clause only for fields registered as absentable.
 
 ## Context
 

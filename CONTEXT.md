@@ -47,11 +47,19 @@ compare equal. Its values must be distinct across the whole result set — that 
 
 It can never be absentable: a missing tiebreaker would let two anchors collide. Enforced
 structurally — `uniqueBy` accepts only atomic codecs, so an `Option`-typed unique field won't compile.
+Re-registering it through either `withField` overload is rejected at runtime, so it also cannot be
+made absentable, or given a second extractor, after the fact (ADR 0010).
 
 ### Absent ordering
 
 `Absent` always sorts **after** non-`Absent` values, regardless of `Order.Ascending` /
 `Order.Descending` (ADR 0001).
+
+Drivers annotate placement only for fields folio knows are absentable — those registered through the
+`T => Option[V]` `withField` overload. A registered required field renders a bare `ASC` / `DESC`,
+avoiding a null-placement mismatch with an otherwise compatible default index. An order field absent
+from the supplied `KeysetField`, and every field when no `KeysetField` is supplied, has unknown
+absentability and uses the dialect's default placement (ADR 0010).
 
 ### Filter
 

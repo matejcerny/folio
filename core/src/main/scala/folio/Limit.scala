@@ -20,19 +20,15 @@ object Limit:
   extension (limit: Limit)
     def value: Int = limit
 
-    /** The number of rows a driver should fetch: one more than the page size, so [[Page.withPagination]] can detect
-      * whether a further page exists. Drivers read this (via [[ResolvedQuery.fetchLimit]]) rather than adding one
-      * themselves.
+    /** One more than the page size, so [[Page.withPagination]] can detect a further page. Drivers read this via
+      * [[ResolvedQuery.fetchLimit]] rather than adding one themselves.
       */
     def fetchLimit: Limit = limit + 1
 
     private[folio] def hasMore(items: Seq[?]): Boolean = items.lengthCompare(limit) > 0
 
 extension (n: Int)
-  /** Construct a [[Limit]] from an integer literal with a compile-time range check.
-    *
-    * Example: `10.items`
-    */
+  /** Construct a [[Limit]] from an integer literal with a compile-time range check, e.g. `10.items`. */
   inline def items: Limit =
     inline if n > 0 && n <= Limit.MaxValue then Limit.unsafe(n)
     else scala.compiletime.error("Limit must be in range (0, 100_000]")

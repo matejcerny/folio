@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted — 2026-05-30.
+Accepted — 2026-05-30. `uniqueBy` still rejects `Option` extractors structurally;
+[ADR 0010](0010-nulls-clause-for-absentable-fields-only.md) adds that both
+`withField` overloads reject *re-registering* the unique field at runtime, so it
+can never enter `absentableFields`.
 
 ## Context
 

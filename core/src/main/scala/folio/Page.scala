@@ -10,11 +10,7 @@ case class Page[T](
     data: Seq[T]
 ):
 
-  /** Map the page data, preserving the limit and both cursors.
-    *
-    * Drivers commonly decode an internal row model and expose another; the cursors describe the query, not the row
-    * type, so they carry over unchanged.
-    */
+  /** Map the page data. Cursors describe the query, not the row type, so they carry over unchanged. */
   def map[U](f: T => U): Page[U] = Page(limit, previousCursor, nextCursor, data.map(f))
 
 object Page:
@@ -26,14 +22,10 @@ object Page:
     * `fetchRows` should fetch [[ResolvedQuery.fetchLimit]] rows (one more than the page size) for hasMore detection.
     * The extra row is dropped before the page is returned.
     *
-    * Cursor-decoding failures are raised through [[FolioEffect.raiseError]]. Pure cursor decoding remains available
-    * through [[Cursor.decode]], which returns `Either`.
+    * Cursor-decoding failures are raised through [[FolioEffect.raiseError]]; [[Cursor.decode]] stays pure.
     *
-    * Keyset is selected when `KeysetField[FIELD, T]` is in scope; otherwise offset-only is used.
-    *
-    * When `KeysetField[FIELD, T]` is in scope and `query.ordering` is empty, the default ascending id ordering is
-    * materialized into [[ResolvedQuery.ordering]] so callers always receive a deterministic ordering for keyset
-    * queries.
+    * Keyset is selected when `KeysetField[FIELD, T]` is in scope, otherwise offset-only. With a keyset field and an
+    * empty `query.ordering`, the default ascending id ordering is materialized so keyset queries stay deterministic.
     */
   inline def withPagination[F[_]: FolioEffect, T, FIELD: FieldSchema](
       query: Query[FIELD],
@@ -46,9 +38,8 @@ object Page:
 
   /** Build a page using an explicitly supplied keyset definition.
     *
-    * This is the primitive entry point for adapters that also need the keyset definition when rendering a
-    * [[ResolvedQuery]]. Passing the same `Option` to both layers avoids resolving contextual metadata independently.
-    * `None` selects offset-only pagination even when a `KeysetField[FIELD, T]` is in scope.
+    * The primitive for adapters that also need the keyset definition when rendering a [[ResolvedQuery]], so both layers
+    * see the same `Option`. `None` selects offset-only even when a `KeysetField[FIELD, T]` is in scope.
     */
   def withPagination[F[_]: FolioEffect, T, FIELD: FieldSchema](
       query: Query[FIELD],
@@ -130,10 +121,8 @@ object Page:
                   fingerprint
                 )
               val hasPreviousPage = fetchPosition match
-                // ADR 0003: offset is absolute and direction is a no-op, so a previous page
-                // exists iff we are not already at the start. hasMore measures forward rows
-                // for an offset fetch and must not gate the previous cursor (would self-loop
-                // at offset 0).
+                // ADR 0003: offset is absolute, so a previous page exists iff we are not at the start.
+                // hasMore measures forward rows and must not gate it (would self-loop at offset 0).
                 case offset: Position.Offset => !offset.isFirst
                 case _: Position.Keyset      => (isBackward && hasMore) || (!isBackward && !current.isFirst)
               val previousCursor = Option.when(hasPreviousPage):

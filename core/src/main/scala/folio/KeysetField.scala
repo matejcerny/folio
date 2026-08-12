@@ -6,13 +6,16 @@ import scala.annotation.{ implicitNotFound, targetName }
   * type `T`. Provide one alongside your [[FieldSchema]] to opt into keyset; omit it to fall back to offset-only
   * pagination.
   *
-  * The unique-field's value type is captured as a type member [[ID]] and inferred from the row extractor at
-  * construction. A [[FieldValueCodec]] for [[ID]] is required so the cursor can serialize the keyset anchor.
+  * The unique field's value type is the type member [[ID]], inferred from the row extractor; it needs a
+  * [[FieldValueCodec]] so the cursor can serialize the anchor.
   *
-  * Use [[withField]] to register additional non-unique order fields for keyset pagination. Each registered field has a
-  * typed extractor and a [[FieldValueCodec]] so its row value can be encoded into the cursor anchor. The
-  * `T => Option[V]` overload marks the field as absentable: a missing row value encodes as [[AnchorValue.Absent]] and
-  * the decoder accepts the same in that slot.
+  * Use [[withField]] to register additional non-unique order fields, each with a typed extractor and a
+  * [[FieldValueCodec]]. The `T => Option[V]` overload marks the field absentable: a missing value encodes as
+  * [[AnchorValue.Absent]] and the decoder accepts the same in that slot.
+  *
+  * Neither [[withField]] overload may re-register the unique field, so one extractor serves the tiebreaker and it can
+  * never become absentable. An attempt throws `IllegalArgumentException` — the field value is only known at runtime, so
+  * unlike the `Option`-typed `uniqueBy` this cannot be rejected at compile time (ADR 0002).
   */
 @implicitNotFound(
   "Keyset pagination needs a `given KeysetField[${FIELD}, ${T}]`. Use `KeysetField.uniqueBy(idField, _.id)` to provide one, or omit it for offset-only pagination."
@@ -34,6 +37,8 @@ trait KeysetField[FIELD, T]:
 
 object KeysetField:
   type Aux[FIELD, T, ID0] = KeysetField[FIELD, T] { type ID = ID0 }
+
+  private val uniqueFieldReregistration = "The unique field cannot be re-registered with withField"
 
   def uniqueBy[FIELD, T, ID0](idField: FIELD, extract: T => ID0)(using
       idCodec: FieldValueCodec[ID0]
@@ -58,13 +63,20 @@ object KeysetField:
 
       @targetName("withRequiredField")
       def withField[V](field: FIELD, extract: T => V)(using fieldCodec: FieldValueCodec[V]): Aux[FIELD, T, ID] =
-        make(idField, extractId, idCodec, registeredFields.updated(field, FieldExtractor.required(extract)))
+        register(field, FieldExtractor.required(extract))
 
       @targetName("withAbsentableField")
       def withField[V](field: FIELD, extract: T => Option[V])(using
           fieldCodec: FieldValueCodec[V]
       ): Aux[FIELD, T, ID] =
-        make(idField, extractId, idCodec, registeredFields.updated(field, FieldExtractor.absentable(extract)))
+        register(field, FieldExtractor.absentable(extract))
+
+      /** The one registration path both overloads take, so neither can overwrite the unique field's extractor —
+        * `CursorAdvance` would encode anchors with the replacement while the driver kept treating it as the tiebreaker.
+        */
+      private def register(field: FIELD, extractor: FieldExtractor[T]): Aux[FIELD, T, ID] =
+        if field == idField then throw IllegalArgumentException(uniqueFieldReregistration)
+        else make(idField, extractId, idCodec, registeredFields.updated(field, extractor))
 
       private[folio] def codec: FieldValueCodec[ID] = idCodec
       private[folio] def fields: Map[FIELD, FieldExtractor[T]] = registeredFields
@@ -73,10 +85,9 @@ private[folio] trait FieldExtractor[T]:
   def encodedFromRow(row: T): AnchorValue
   def isAbsentable: Boolean
 
-  /** Whether a decoded anchor slot carries a value this field's codec can consume. [[AnchorValue.Absent]] is always
-    * accepted here (absentability is validated separately); a [[FieldValue]] variant the codec does not recognise is
-    * rejected, so a type-forged cursor fails as a `CursorDecodingError` rather than reaching the SQL driver as a
-    * mismatched bind.
+  /** Whether a decoded anchor slot carries a value this field's codec can consume. [[AnchorValue.Absent]] always passes
+    * (absentability is validated separately); an unrecognised [[FieldValue]] variant is rejected, so a type-forged
+    * cursor fails as a `CursorDecodingError` instead of reaching the driver as a mismatched bind.
     */
   def acceptsVariant(value: AnchorValue): Boolean
 

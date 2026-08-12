@@ -7,14 +7,12 @@ import scala.math.Ordering.Implicits.seqOrdering
 /** The single canonical view of a query's filter set, shared by cursor fingerprinting and by driver modules that render
   * predicates.
   *
-  * `Query.filters` is a `Set`, so iteration order is an implementation detail of the set. Both consumers need a total
-  * order over the same filters for the same reason: a fingerprint that depended on iteration order would declare
-  * cursors stale at random, and SQL whose predicate order drifted would defeat statement caching and make SQL-shape
-  * assertions untestable. Ordering here once keeps both in step.
+  * `Query.filters` is a `Set`, and both consumers need a stable order: a fingerprint following iteration order would
+  * declare cursors stale at random, and drifting predicate order would defeat statement caching.
   *
   * The order is field name, then predicate tag, then the unsigned lexicographic comparison of the encoded value bytes.
-  * Encoded bytes rather than raw values, because the encoded value is what a filter is identified by (see
-  * [[FilterBy.ExactMatch]]) and it is comparable across value types without inventing a cross-type value ordering.
+  * Encoded bytes because that is what identifies a filter ([[FilterBy.ExactMatch]]) and they compare across value types
+  * without a cross-type value ordering.
   */
 private[folio] object CanonicalFilters:
 
@@ -34,17 +32,14 @@ private[folio] object CanonicalFilters:
   def sorted[FIELD: FieldSchema](filters: Set[FilterBy[FIELD]]): Vector[FilterBy[FIELD]] =
     filters.toVector.sortBy(sortKey)
 
-  /** The filter contribution to the stale-cursor fingerprint: an empty string when there are no filters, otherwise the
-    * hex rendering of the canonical filter bytes.
+  /** The filter contribution to the stale-cursor fingerprint: empty when there are no filters, otherwise hex-rendered
+    * canonical filter bytes.
     *
-    * Every entry is self-delimiting — a length-delimited field name, a predicate tag, then the tagged field value — so
-    * no field name or string value can imitate an entry boundary. Hex keeps the result free of the delimiters the
-    * surrounding fingerprint string uses, and an empty filter set contributes nothing, which leaves unfiltered
-    * fingerprints byte-identical to a folio without filters.
+    * Every entry is self-delimiting — length-delimited field name, predicate tag, tagged field value — so no name or
+    * string value can imitate a boundary. Hex avoids the delimiters the surrounding fingerprint uses.
     *
-    * `TimestampV` keeps the offset the caller supplied instead of normalising to UTC. That matches
-    * `OffsetDateTime.equals` and therefore filter identity: the same instant written at a different offset is a
-    * different filter, renders a different bind, and invalidates outstanding cursors.
+    * `TimestampV` keeps the caller's offset rather than normalising to UTC, matching `OffsetDateTime.equals`: the same
+    * instant at a different offset is a different filter and invalidates outstanding cursors.
     */
   def fingerprintPart[FIELD: FieldSchema](filters: Set[FilterBy[FIELD]]): String =
     hex(sorted(filters).flatMap(entryBytes))

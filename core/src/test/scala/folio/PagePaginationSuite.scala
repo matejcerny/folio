@@ -148,8 +148,8 @@ object PagePaginationSuite extends SimpleIOSuite:
   pureTest("keyset: backward with hasMore=true emits both"):
     val current = DecodedCursor(Direction.Backward, keysetOf(10L))
     val query = queryWithCurrent(keysetQuery, current)
-    // backward fetch returns rows descending; take(limit) keeps the two closest to the cursor,
-    // and reversing produces the displayed ascending order.
+    // Backward fetch returns rows descending; take(limit) keeps the two closest to the cursor, reversing displays them
+    // ascending.
     val rowsPlusOne = syntheticRows(7, 6, 5)
     val page = pageOrFail(rowsPlusOne, query)
     val next = page.nextCursor.map(decodedOf(_, query))
@@ -235,8 +235,8 @@ object PagePaginationSuite extends SimpleIOSuite:
     ).combineAll
 
   pureTest("offset: backward at non-zero offset emits both (previous availability is positional, not hasMore-gated)"):
-    // Offset previous availability is purely positional per ADR 0003: at offset 30 > 0 a previous page
-    // exists regardless of hasMore (which for an offset fetch measures forward rows, not earlier ones).
+    // ADR 0003: offset previous availability is positional — at offset 30 a previous page exists regardless of hasMore,
+    // which measures forward rows.
     val current = DecodedCursor(Direction.Backward, Position.Offset.unsafe(30L))
     val query = queryWithCurrent(offsetQuery, current)
     val rowsPlusOne = syntheticRows(1)
@@ -249,9 +249,8 @@ object PagePaginationSuite extends SimpleIOSuite:
     ).combineAll
 
   pureTest("offset: backward at offset 0 with hasMore=true emits no previous cursor (regression: no self-loop)"):
-    // Following previousCursor backward reaches offset 0. hasMore is true (forward rows exist), but per ADR 0003
-    // an offset backward fetch walks forward, so hasMore must not emit a previous cursor here — doing so would
-    // clamp back to offset 0 and self-loop forever.
+    // At offset 0 hasMore is true (forward rows exist), but it must not emit a previous cursor — that would clamp back to
+    // offset 0 and self-loop (ADR 0003).
     val current = DecodedCursor(Direction.Backward, Position.Offset.First)
     val query = queryWithCurrent(offsetQuery, current)
     val rowsPlusOne = syntheticRows(1, 2, 3)
@@ -263,8 +262,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     ).combineAll
 
   // ---------- offset-only (no IdField) ----------
-  // FIELD without IdField -> Page.withPagination selects CursorAdvance.offsetOnly,
-  // which has no rowId dependency. Position.fromQuery always resolves to Offset.First here.
+  // Without an IdField, withPagination selects CursorAdvance.offsetOnly and Position.fromQuery always gives Offset.First.
 
   pureTest("offset-only: initial forward with hasMore=true emits next pointing at limit"):
     val rowsPlusOne = syntheticRows(1, 2, 3)
@@ -321,7 +319,7 @@ object PagePaginationSuite extends SimpleIOSuite:
     ).combineAll
 
   pureTest("offset-only: backward at offset 0 with hasMore=true emits no previous cursor (regression: no self-loop)"):
-    // Same positional rule on the offset-only (no KeysetField) path, which flows through the same Position.Offset branch.
+    // Same positional rule on the offset-only path.
     val current = DecodedCursor(Direction.Backward, Position.Offset.First)
     val query = queryWithCurrent(offsetOnlyQuery, current)
     val rowsPlusOne = syntheticRows(1, 2, 3)
@@ -334,8 +332,8 @@ object PagePaginationSuite extends SimpleIOSuite:
 
   // ---------- realistic fetcher ----------
 
-  // Order by Description (unregistered) keeps offset semantics; description == createdAt for all rows
-  // so the realistic data assertions land in the same order as a CreatedAt asc ordering.
+  // Description is unregistered (offset semantics) and equals createdAt for all rows, so assertions land in CreatedAt asc
+  // order.
   private val realisticOffsetQuery: Query[TestField] =
     TestFixtures.emptyQueryWithId.copy(ordering = Vector(TestField.Description.ascending), limit = limit)
 
@@ -552,9 +550,8 @@ object PagePaginationSuite extends SimpleIOSuite:
   // ---------- strategy mismatch ----------
 
   pureTest("mismatch: keyset cursor against offset query (KeysetField in scope, non-id order) is rejected"):
-    // offsetQuery has ordering = [Description.descending]; KeysetField has Id registered.
-    // The encoded keyset must therefore carry two values (description + id) to satisfy arity validation
-    // before reaching the strategy-mismatch check.
+    // ordering = [Description.descending] plus the registered Id, so the encoded keyset needs two values to pass arity
+    // validation before reaching the strategy-mismatch check.
     val keysetPosition =
       Position.Keyset(List(FieldValue.StringV("ignored").present, FieldValue.LongV(5L).present))
     val current = DecodedCursor(Direction.Forward, keysetPosition)
@@ -731,9 +728,8 @@ object PagePaginationSuite extends SimpleIOSuite:
     ).combineAll
 
   pureTest("absent keyset: backward across the Some/Absent boundary returns the canonical preceding slice"):
-    // Forward sequence: [0,1] [2,3] [4,5] [6,7] [8,9]. page4=[6,7] sits entirely in the Absent block;
-    // its previousCursor anchors at (Absent, 6), so the backward seek must cross into the Some block
-    // and return [4, 5] — the canonical slice immediately preceding page4.
+    // page4=[6,7] sits inside the Absent block and anchors at (Absent, 6), so the backward seek must cross into the Some
+    // block and return [4,5].
     val page1 = pageWith(rowTable.fetch, absentOrderQuery)
     val cursor2 = page1.nextCursor.getOrElse(sys.error("expected next cursor"))
     val page2 = pageWith(rowTable.fetch, absentOrderQuery.copy(cursor = Some(cursor2)))

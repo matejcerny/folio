@@ -1,11 +1,14 @@
 package folio
 
 import scala.compiletime.testing.typeCheckErrors
+import scala.util.Try
 
 import cats.syntax.foldable.*
 import weaver.SimpleIOSuite
 
 object KeysetFieldSuite extends SimpleIOSuite:
+
+  private val reregistrationMessage = "The unique field cannot be re-registered with withField"
 
   pureTest("uniqueBy registers the unique field as required (non-absentable)"):
     val keysetField = KeysetField.uniqueBy(TestField.Id, (row: Row) => row.id)
@@ -63,6 +66,28 @@ object KeysetFieldSuite extends SimpleIOSuite:
     List(
       expect.same(FieldValue.StringV("alice").present, extractor.encodedFromRow(row)),
       expect(!extractor.isAbsentable)
+    ).combineAll
+
+  pureTest("withField (T => V) rejects re-registering the unique field"):
+    val attempt = Try(
+      KeysetField
+        .uniqueBy(TestField.Id, (row: Row) => row.id)
+        .withField(TestField.Id, (row: Row) => row.name)
+    )
+    List(
+      expect(attempt.failed.toOption.exists(_.isInstanceOf[IllegalArgumentException])),
+      expect.same(Some(reregistrationMessage), attempt.failed.toOption.map(_.getMessage))
+    ).combineAll
+
+  pureTest("withField (T => Option[V]) rejects re-registering the unique field"):
+    val attempt = Try(
+      KeysetField
+        .uniqueBy(TestField.Id, (row: Row) => row.id)
+        .withField(TestField.Id, (row: Row) => row.lastSeen)
+    )
+    List(
+      expect(attempt.failed.toOption.exists(_.isInstanceOf[IllegalArgumentException])),
+      expect.same(Some(reregistrationMessage), attempt.failed.toOption.map(_.getMessage))
     ).combineAll
 
   pureTest("uniqueBy does not accept Option-typed extractor (compile error)"):

@@ -4,11 +4,9 @@ import scala.concurrent.{ ExecutionContext, Future }
 
 /** The minimal effect capability needed by [[Page.withPagination]].
   *
-  * Folio performs one fetch and transforms its result, or raises a [[FolioError]] without fetching. It does not require
-  * arbitrary effect composition, concurrency, cancellation, or resource management from the caller's effect system.
-  * Keeping this boundary deliberately small lets `folio-core` work with Cats Effect, ZIO, Kyo, `Future`, direct-style
-  * effects, and synchronous code without depending on any of them. It is an operational capability, not a claim that
-  * `F` is referentially transparent or supplies a lawful full effect typeclass.
+  * Folio performs one fetch and transforms its result, or raises a [[FolioError]]. No composition, concurrency, or
+  * resource management is required, which lets `folio-core` work with Cats Effect, ZIO, Kyo, `Future`, and synchronous
+  * code without depending on any of them. An operational capability, not a lawful effect typeclass.
   */
 trait FolioEffect[F[_]]:
   def map[A, B](effect: F[A])(transform: A => B): F[B]

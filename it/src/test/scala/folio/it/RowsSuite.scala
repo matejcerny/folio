@@ -11,12 +11,11 @@ import folio.skunk.Pagination
 /** Postgres harness shared by the integration suites: the session, the per-test dataset reset, and the cursor-driven
   * walk helpers.
   *
-  * A suite extending this supplies datasets and expected page contents only. Walks are driven by folio's own cursors —
-  * no cursor string is ever hardcoded — so a suite states what each page must contain and nothing about how the cursor
-  * got there.
+  * A suite extending this supplies datasets and expected page contents only; walks are driven by folio's own cursors,
+  * so no cursor string is ever hardcoded.
   *
-  * These run against a real PostgreSQL (`docker compose up -d postgres`) so that real `bigint`/`text`/`timestamptz`
-  * comparison and ordering — including the `last_seen IS NULL` boundary — is exercised end to end.
+  * Needs a real PostgreSQL (`docker compose up -d postgres`) to exercise real `bigint`/`text`/`timestamptz` comparison,
+  * including the `last_seen IS NULL` boundary.
   */
 abstract class RowsSuite extends weaver.IOSuite:
 
@@ -24,9 +23,8 @@ abstract class RowsSuite extends weaver.IOSuite:
 
   type Res = Session[IO]
 
-  // weaver runs a suite's test cases concurrently by default (MutableFSuite.maxParallelism = 10000); a single Skunk
-  // `Session` is not safe for concurrent use, so serialize the cases onto it. (`Test/parallelExecution := false` only
-  // controls sbt-level cross-suite parallelism, not weaver's intra-suite concurrency — it is what keeps two suites from
+  // Weaver runs test cases concurrently by default and a Skunk `Session` is not concurrency-safe, so serialize them.
+  // (`Test/parallelExecution := false` only stops cross-suite parallelism, which is what keeps two suites from
   // truncating the shared `rows` table underneath each other.)
   override def maxParallelism: Int = 1
 
@@ -52,9 +50,7 @@ abstract class RowsSuite extends weaver.IOSuite:
   protected def page(session: Session[IO], query: Query[RowField]): IO[Page[Row]] =
     Pagination.withPagination[IO, Row, RowField](query, session, rowCodec)(select)
 
-  /** Follow `nextCursor` to the end; returns every page in visit order. Terminates when a page has no next cursor (a
-    * finite dataset always reaches a short final fetch).
-    */
+  /** Follow `nextCursor` to the end; returns every page in visit order. */
   protected def walkForward(session: Session[IO], query: Query[RowField]): IO[List[Page[Row]]] =
     page(session, query).flatMap: current =>
       current.nextCursor match
@@ -62,11 +58,7 @@ abstract class RowsSuite extends weaver.IOSuite:
         case None         => IO.pure(List(current))
 
   /** From the final page, follow `previousCursor` to the start; returns each fetched page in visit order (newest to
-    * oldest, the final page itself excluded).
-    *
-    * Termination: both strategies stop naturally when the first page reports no previous cursor. Keyset's reverse seek
-    * past the start returns fewer than `limit + 1` rows; offset's previous availability is positional (offset > 0), so
-    * at offset 0 the first page emits no previous cursor rather than clamping back to itself and self-looping.
+    * oldest, the final page excluded). Both strategies stop when the first page reports no previous cursor.
     */
   protected def walkBackward(
       session: Session[IO],

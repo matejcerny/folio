@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted — 2026-06-12.
+Accepted — 2026-06-12. The list of inconsistent inputs that return
+`FolioError.InvalidQuery` rather than SQL grew: see
+[ADR 0010](0010-nulls-clause-for-absentable-fields-only.md) for a keyset position
+whose cursor fields are not all registered in the supplied `KeysetField`.
 
 ## Context
 
@@ -53,7 +56,8 @@ error channel.
 
 - The escape hatch stays usable in codebases where one `FIELD` enum backs
   several row models.
-- `None` + `Position.Keyset`, and any anchor-arity mismatch, surface as a
+- `None` + `Position.Keyset`, any anchor-arity mismatch, and (per ADR 0010) any
+  keyset cursor field missing from the supplied `KeysetField`, surface as a
   typed `FolioError.InvalidQuery` the caller can map to their own error type —
   never as wrong SQL.
 - An empty anchor (`Position.Keyset(Nil)`, the first-page request) is valid and

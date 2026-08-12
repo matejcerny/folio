@@ -77,7 +77,7 @@ object FilteredPaginationSuite extends SimpleIOSuite:
     val query = resolved(nameFilter, Position.Keyset.First)
     List(
       expect.same(
-        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE usersql."name" = $1 ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC LIMIT $2""",
+        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE usersql."name" = $1 ORDER BY usersql."enqueued_at" DESC, usersql."id" ASC LIMIT $2""",
         sqlOf(query)
       ),
       expect.same(List("text", "int4"), typesOf(query))
@@ -90,12 +90,12 @@ object FilteredPaginationSuite extends SimpleIOSuite:
     val unfiltered = resolved(Set.empty, Position.Keyset(anchor))
     List(
       expect.same(
-        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE usersql."name" = $1 AND ((usersql."enqueued_at" < $2) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $3 AND (usersql."id" > $4))) ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC LIMIT $5""",
+        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE usersql."name" = $1 AND ((usersql."enqueued_at" < $2) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $3 AND (usersql."id" > $4))) ORDER BY usersql."enqueued_at" DESC, usersql."id" ASC LIMIT $5""",
         sqlOf(filtered)
       ),
       expect.same(List("text", "timestamptz", "timestamptz", "int8", "int4"), typesOf(filtered)),
       expect.same(
-        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."enqueued_at" < $1) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $2 AND (usersql."id" > $3)) ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC LIMIT $4""",
+        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE (usersql."enqueued_at" < $1) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $2 AND (usersql."id" > $3)) ORDER BY usersql."enqueued_at" DESC, usersql."id" ASC LIMIT $4""",
         sqlOf(unfiltered)
       ),
       expect.same(List("timestamptz", "timestamptz", "int8", "int4"), typesOf(unfiltered))
@@ -105,7 +105,7 @@ object FilteredPaginationSuite extends SimpleIOSuite:
     val query = resolved(nameFilter, Position.Keyset(anchor), Direction.Backward)
     List(
       expect.same(
-        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE usersql."name" = $1 AND ((usersql."enqueued_at" > $2) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $3 AND (usersql."id" < $4))) ORDER BY usersql."enqueued_at" ASC NULLS FIRST, usersql."id" DESC LIMIT $5""",
+        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE usersql."name" = $1 AND ((usersql."enqueued_at" > $2) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $3 AND (usersql."id" < $4))) ORDER BY usersql."enqueued_at" ASC, usersql."id" DESC LIMIT $5""",
         sqlOf(query)
       ),
       expect.same(List("text", "timestamptz", "timestamptz", "int8", "int4"), typesOf(query))
@@ -133,7 +133,7 @@ object FilteredPaginationSuite extends SimpleIOSuite:
     val query = resolved(nameFilter, Position.Offset.unsafe(40))
     List(
       expect.same(
-        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE usersql."name" = $1 ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC OFFSET $2 LIMIT $3""",
+        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE usersql."name" = $1 ORDER BY usersql."enqueued_at" DESC, usersql."id" ASC OFFSET $2 LIMIT $3""",
         sqlOf(query)
       ),
       expect.same(List("text", "int8", "int4"), typesOf(query))
@@ -153,7 +153,7 @@ object FilteredPaginationSuite extends SimpleIOSuite:
     )
     List(
       expect.same(
-        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE usersql."enqueued_at" = $1 AND usersql."id" = $2 AND usersql."id" = $3 AND usersql."name" = $4 ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC LIMIT $5""",
+        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE usersql."enqueued_at" = $1 AND usersql."id" = $2 AND usersql."id" = $3 AND usersql."name" = $4 ORDER BY usersql."enqueued_at" DESC, usersql."id" ASC LIMIT $5""",
         sqlOf(query)
       ),
       expect.same(List("timestamptz", "int4", "int8", "text", "int4"), typesOf(query)),
@@ -170,7 +170,7 @@ object FilteredPaginationSuite extends SimpleIOSuite:
     )
     List(
       expect.same(
-        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE usersql."name" = $1 AND usersql."name" = $2 ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC OFFSET $3 LIMIT $4""",
+        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE usersql."name" = $1 AND usersql."name" = $2 ORDER BY usersql."enqueued_at" DESC, usersql."id" ASC OFFSET $3 LIMIT $4""",
         sqlOf(query)
       ),
       expect.same(List("text", "text", "int8", "int4"), typesOf(query)),
@@ -203,7 +203,7 @@ object FilteredPaginationSuite extends SimpleIOSuite:
     List(
       expect.same(
         Right(
-          """SELECT * FROM (SELECT * FROM messages WHERE tenant = $1) AS usersql WHERE usersql."name" = $2 AND ((usersql."enqueued_at" < $3) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $4 AND (usersql."id" > $5))) ORDER BY usersql."enqueued_at" DESC NULLS LAST, usersql."id" ASC LIMIT $6"""
+          """SELECT * FROM (SELECT * FROM messages WHERE tenant = $1) AS usersql WHERE usersql."name" = $2 AND ((usersql."enqueued_at" < $3) OR (usersql."enqueued_at" IS NOT DISTINCT FROM $4 AND (usersql."id" > $5))) ORDER BY usersql."enqueued_at" DESC, usersql."id" ASC LIMIT $6"""
         ),
         applied.map(_.fragment.sql)
       ),
@@ -227,7 +227,7 @@ object FilteredPaginationSuite extends SimpleIOSuite:
     )
     expect.same(
       Right(
-        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE usersql."a""b" = $1 AND usersql."order" = $2 ORDER BY usersql."order" ASC NULLS LAST OFFSET $3 LIMIT $4"""
+        """SELECT * FROM (SELECT * FROM messages) AS usersql WHERE usersql."a""b" = $1 AND usersql."order" = $2 ORDER BY usersql."order" ASC OFFSET $3 LIMIT $4"""
       ),
       Pagination.buildSql(query, select, None).map(_.fragment.sql)
     )

@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted — 2026-07-14.
+Accepted — 2026-07-14. The appended-tiebreaker decision stands; the `appended`
+flag described under *Decision* is gone, replaced by the absentability-driven
+renderer of
+[ADR 0010](0010-nulls-clause-for-absentable-fields-only.md) — which renders the
+appended unique field identically.
 
 ## Context
 

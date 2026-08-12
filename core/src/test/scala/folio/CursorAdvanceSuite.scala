@@ -21,9 +21,8 @@ object CursorAdvanceSuite extends SimpleIOSuite:
     expect.same(keyset, advance.previous(keyset, Vector.empty, Seq.empty, limit))
 
   // --- keysetAware None-extractor fallback ---
-  // When an order field has no registered extractor, encodeRow falls back to the id codec/extractor.
-  // In normal flow Position.fromQuery would pick Offset for this configuration, but the trait
-  // defensively handles a forged Keyset position.
+  // With no registered extractor for an order field, encodeRow falls back to the id extractor. Position.fromQuery would
+  // pick Offset here; this covers a forged Keyset position.
 
   pureTest("keysetAware.next falls back to id when order field has no registered extractor"):
     val keysetField = KeysetField.uniqueBy(TestField.Id, (row: Row) => row.id)
